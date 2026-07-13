@@ -1,0 +1,67 @@
+/* animations.css - Shared, theme-aware micro-animations for Voco.
+ *
+ * Keyframes and helper classes used across the app (transcript segments,
+ * tab content, pills/badges). All effects are subtle and respect
+ * prefers-reduced-motion.
+ */
+
+@layer components {
+  @keyframes voco-fade-slide-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes voco-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes voco-pill-appear {
+    from {
+      opacity: 0;
+      transform: scale(0.85);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes voco-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  /* Transcript segment entrance */
+  .voco-segment-enter {
+    animation: voco-fade-slide-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  /* Tab content entrance */
+  .voco-tab-enter {
+    animation: voco-fade-in 220ms ease both;
+  }
+
+  /* Pill / badge entrance */
+  .voco-pill-enter {
+    animation: voco-pill-appear 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .voco-segment-enter,
+    .voco-tab-enter,
+    .voco-pill-enter {
+      animation: none;
+    }
+  }
+}

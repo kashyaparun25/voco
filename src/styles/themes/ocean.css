@@ -1,0 +1,35 @@
+/* ocean.css - Deep navy dark theme with teal/aqua accents for Voco */
+[data-theme="ocean"] {
+  /* Backgrounds */
+  --color-background-app: #071624;
+  --color-background-surface: #0c2033;
+  --color-background-surface-hover: #12293f;
+  --color-background-elevated: #16324c;
+
+  /* Text */
+  --color-text-primary: #e2f1f8;
+  --color-text-secondary: #8ba9bd;
+
+  /* Accent — teal/aqua */
+  --color-accent: #0ea5e9;
+  --color-accent-hover: #0284c7;
+  --color-accent-text: #7dd3fc;
+
+  /* Borders */
+  --color-border: rgba(125, 211, 252, 0.12);
+  --color-border-strong: rgba(125, 211, 252, 0.24);
+
+  /* Special */
+  --color-recording: #f87171;
+  --color-recording-pulse: rgba(248, 113, 113, 0.3);
+
+  /* Speaker palette */
+  --color-speaker-1: #38bdf8;  /* Sky */
+  --color-speaker-2: #2dd4bf;  /* Teal */
+  --color-speaker-3: #22d3ee;  /* Cyan */
+  --color-speaker-4: #34d399;  /* Aqua green */
+  --color-speaker-5: #60a5fa;  /* Blue */
+  --color-speaker-6: #818cf8;  /* Indigo */
+  --color-speaker-7: #5eead4;  /* Light teal */
+  --color-speaker-8: #93c5fd;  /* Light blue */
+}

@@ -1,0 +1,126 @@
+[package]
+name = "voco"
+version = "0.2.0"
+description = "Private, on-device voice dictation & meeting notes for macOS."
+authors = ["Arun Kashyap <kashyaparun25@gmail.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "voco_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+hound = "3.5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "protocol-asset"] }
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-store = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-positioner = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-clipboard-manager = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cpal = "0.15"
+ringbuf = "0.4"
+rubato = "0.15"
+hound = "3.5"
+# Pure-Rust audio decoding for the "import audio" feature (mp3/m4a/wav/flac).
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "wav", "pcm", "flac"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+thiserror = "2"
+# CPU inference. whisper-rs 0.13's bundled Metal shaders fail to compile on
+# newer Metal (M4: "unknown type name 'block_q4_0'") and, when a second ggml
+# (llama.cpp) is present, that turns a graceful fallback into a hard abort.
+# Tiny/base models are fast enough on Apple-silicon CPU for dictation.
+whisper-rs = { version = "0.13" }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "multipart"] }
+reqwest-eventsource = "0.6"
+futures-util = "0.3"
+async-trait = "0.1"
+window-vibrancy = "0.5"
+objc2 = "0.5"
+
+# Optional heavy ML crates — enabled via features. Gated so the default build
+# stays fast and dependency-light; enable individually or via `ml-all`.
+# ort ships prebuilt ONNX Runtime binaries (no local C++ build required).
+ort = { version = "2.0.0-rc.12", features = ["coreml"], optional = true }
+ndarray = { version = "0.16", optional = true }
+# Audio8-ASR embedded engine (feature: audio8): FFT for Whisper mel, HF tokenizer,
+# mmap for the 311MB token-embedding table, and npz reader for the MLP adapter.
+rustfft = { version = "6", optional = true }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"], optional = true }
+memmap2 = { version = "0.9", optional = true }
+ndarray-npy = { version = "0.9", optional = true }
+# Maintained llama.cpp binding (replaces the broken `llama_cpp_rs` 0.3, whose
+# build script mis-invokes `ar` on missing ggml object files).
+llama-cpp-2 = { version = "0.1.122", features = ["metal"], optional = true }
+speakrs = { version = "0.1", optional = true, features = ["coreml"] }
+
+# Core Graphics / Core Foundation — used for the configurable global hotkey
+# (CGEventTap monitor, incl. bare modifier keys like Left Option) and, under
+# `macos-native`, for CGEvent-based Cmd+V paste. Always available on macOS.
+core-graphics = "0.24"
+core-foundation = "0.10"
+
+# --- macOS native (feature: macos-native) ---
+# ScreenCaptureKit + supporting objc2 framework crates. These are pinned to the
+# objc2 0.5 generation (framework crates 0.2.x, block2 0.5.x, dispatch2 0.2.x)
+# to match the workspace's `objc2 = "0.5"`.
+objc2-screen-capture-kit = { version = "0.2", optional = true, features = ["all"] }
+objc2-foundation = { version = "0.2", optional = true, features = ["all"] }
+dispatch2 = { version = "0.2", optional = true }
+# NSEvent global/local monitors for the dictation hotkey (AppKit-managed,
+# unlike CGEventTap which macOS keeps force-disabling). Always available.
+objc2-app-kit = { version = "0.2", features = ["NSEvent", "block2"] }
+block2 = "0.5"
+
+[features]
+# Neural speaker diarization (pyannote via speakrs/ONNX) is on by default so
+# meetings/imports get real multi-speaker separation. Models auto-download from
+# the HuggingFace cache on first use.
+default = ["neural-diarization", "parakeet", "audio8"]
+# Native macOS paths: CGEvent-based text injection + ScreenCaptureKit system
+# audio capture. Off by default; the existing AppleScript + cpal-loopback
+# fallbacks remain the default behavior.
+macos-native = [
+    "dep:objc2-screen-capture-kit",
+    "dep:objc2-foundation",
+    "dep:dispatch2",
+]
+# Embedded GGUF LLM inference via llama.cpp (compiles llama.cpp from source)
+embedded-llm = ["dep:llama-cpp-2"]
+# Shared ONNX Runtime stack (Silero VAD + Parakeet)
+onnx = ["dep:ort", "dep:ndarray"]
+# Parakeet TDT 0.6B ONNX STT
+parakeet = ["onnx"]
+# Audio8-ASR 0.1B embedded speech-LLM (Whisper 128-mel + ONNX audio tower +
+# MLP adapter + 8-layer KV-cache decoder). Fully native, no Python server.
+audio8 = ["onnx", "dep:rustfft", "dep:tokenizers", "dep:memmap2", "dep:ndarray-npy"]
+# Silero VAD (neural voice-activity detection)
+silero-vad = ["onnx"]
+# Neural speaker diarization via speakrs
+neural-diarization = ["dep:speakrs"]
+# Everything (full ML build)
+ml-all = ["parakeet", "silero-vad", "neural-diarization", "embedded-llm"]

@@ -1,0 +1,35 @@
+/* rose.css - Light theme with blush pink / rose gold accents for Voco */
+[data-theme="rose"] {
+  /* Backgrounds */
+  --color-background-app: #fdf2f4;
+  --color-background-surface: #ffffff;
+  --color-background-surface-hover: #fbe7ec;
+  --color-background-elevated: #fff5f7;
+
+  /* Text */
+  --color-text-primary: #3f2a30;
+  --color-text-secondary: #8a6b72;
+
+  /* Accent — rose gold */
+  --color-accent: #e11d74;
+  --color-accent-hover: #be185d;
+  --color-accent-text: #be185d;
+
+  /* Borders */
+  --color-border: rgba(190, 24, 93, 0.12);
+  --color-border-strong: rgba(190, 24, 93, 0.24);
+
+  /* Special */
+  --color-recording: #dc2626;
+  --color-recording-pulse: rgba(220, 38, 38, 0.2);
+
+  /* Speaker palette */
+  --color-speaker-1: #db2777;  /* Rose */
+  --color-speaker-2: #c026d3;  /* Fuchsia */
+  --color-speaker-3: #9333ea;  /* Purple */
+  --color-speaker-4: #e11d48;  /* Crimson */
+  --color-speaker-5: #ea580c;  /* Orange */
+  --color-speaker-6: #0891b2;  /* Cyan */
+  --color-speaker-7: #059669;  /* Emerald */
+  --color-speaker-8: #ca8a04;  /* Gold */
+}

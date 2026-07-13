@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hide from Dock when tray-only; app is controlled via tray icon -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Microphone access for dictation and meeting recording -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Voco needs microphone access to transcribe your speech in real-time for dictation and meeting recording.</string>
+
+    <!-- Screen recording permission for system audio capture in meeting mode -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Voco needs Screen Recording permission to capture system audio (e.g., video calls, browser audio) during meetings. Voco does not record or save your screen — only the audio.</string>
+
+    <!-- Accessibility permission for text injection into active apps -->
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Voco needs Accessibility access to paste transcribed text into the app you're currently using.</string>
+
+    <!-- Input Monitoring permission for the bare-modifier dictation hotkey (Left Option) -->
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>Voco needs Input Monitoring to detect your dictation hotkey (e.g. Left Option) even when Voco is in the background. Keystrokes are never logged or stored.</string>
+</dict>
+</plist>

@@ -1,0 +1,120 @@
+/* Theme-native UI primitives — all colors come from the app's --color-* vars,
+   so they render correctly in every theme (light and dark). */
+
+.voco-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.voco-btn:disabled { opacity: 0.5; cursor: default; }
+.voco-btn--fullWidth { width: 100%; }
+
+.voco-btn--sm { padding: 6px 12px; font-size: 12px; }
+.voco-btn--md { padding: 9px 16px; font-size: 13.5px; }
+.voco-btn--lg { padding: 12px 22px; font-size: 15px; }
+
+.voco-btn--primary { background: var(--color-accent); color: #fff; }
+.voco-btn--primary:hover:not(:disabled) { background: var(--color-accent-hover); }
+
+.voco-btn--secondary {
+  background: var(--color-background-surface-hover);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-strong);
+}
+.voco-btn--secondary:hover:not(:disabled) { background: var(--color-background-elevated); }
+
+.voco-btn--ghost { background: transparent; color: var(--color-text-secondary); }
+.voco-btn--ghost:hover:not(:disabled) {
+  background: var(--color-background-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.voco-btn--danger {
+  background: transparent;
+  color: var(--color-recording, #ef4444);
+  border-color: var(--color-border-strong);
+}
+.voco-btn--danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: var(--color-recording, #ef4444);
+}
+
+.voco-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  cursor: pointer;
+  background: var(--color-background-elevated);
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-text-primary);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  padding: 0;
+}
+.voco-iconbtn:hover:not(:disabled) { background: var(--color-background-surface-hover); }
+.voco-iconbtn:disabled { opacity: 0.5; cursor: default; }
+
+/* Switch with a clearly visible off-track (was near-invisible in dark themes). */
+.voco-toggle {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-background-surface-hover);
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  flex-shrink: 0;
+}
+.voco-toggle[aria-checked="true"] { background: var(--color-accent); border-color: var(--color-accent); }
+.voco-toggle:disabled { opacity: 0.5; cursor: default; }
+.voco-toggle__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-text-secondary);
+  transition: left 0.15s ease, background-color 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.voco-toggle[aria-checked="true"] .voco-toggle__knob { left: 22px; background: #fff; }
+
+.voco-field { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.voco-field__label { font-size: 13px; font-weight: 600; color: var(--color-text-secondary); }
+.voco-input {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-background-elevated);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-strong);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease;
+}
+.voco-input:focus { border-color: var(--color-accent); }
+.voco-input::placeholder { color: var(--color-text-secondary); opacity: 0.7; }
+
+.voco-spin {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: voco-spin 0.7s linear infinite;
+}
+@keyframes voco-spin { to { transform: rotate(360deg); } }

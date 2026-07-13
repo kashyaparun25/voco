@@ -1,0 +1,35 @@
+/* midnight.css - Dark theme configuration for Voco */
+[data-theme="midnight"] {
+  /* Backgrounds */
+  --color-background-app: #0a0a12;
+  --color-background-surface: #12121e;
+  --color-background-surface-hover: #1a1a2e;
+  --color-background-elevated: #1e1e32;
+  
+  /* Text */
+  --color-text-primary: #e8e8f0;
+  --color-text-secondary: #9090a8;
+  
+  /* Accent — electric violet */
+  --color-accent: #7c3aed;
+  --color-accent-hover: #6d28d9;
+  --color-accent-text: #a78bfa;
+  
+  /* Borders */
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.15);
+  
+  /* Special */
+  --color-recording: #ef4444;
+  --color-recording-pulse: rgba(239, 68, 68, 0.3);
+  
+  /* Speaker palette */
+  --color-speaker-1: #3b82f6;  /* Blue */
+  --color-speaker-2: #10b981;  /* Emerald */
+  --color-speaker-3: #f59e0b;  /* Amber */
+  --color-speaker-4: #ef4444;  /* Red */
+  --color-speaker-5: #8b5cf6;  /* Violet */
+  --color-speaker-6: #ec4899;  /* Pink */
+  --color-speaker-7: #06b6d4;  /* Cyan */
+  --color-speaker-8: #84cc16;  /* Lime */
+}

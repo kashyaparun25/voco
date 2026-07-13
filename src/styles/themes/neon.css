@@ -1,0 +1,35 @@
+/* neon.css - True black theme with neon green/pink/blue accents for Voco */
+[data-theme="neon"] {
+  /* Backgrounds */
+  --color-background-app: #000000;
+  --color-background-surface: #0a0a0a;
+  --color-background-surface-hover: #141414;
+  --color-background-elevated: #1c1c1c;
+
+  /* Text */
+  --color-text-primary: #f0fff4;
+  --color-text-secondary: #7fae91;
+
+  /* Accent — neon green */
+  --color-accent: #39ff14;
+  --color-accent-hover: #2ee00f;
+  --color-accent-text: #7cff5c;
+
+  /* Borders */
+  --color-border: rgba(57, 255, 20, 0.15);
+  --color-border-strong: rgba(57, 255, 20, 0.35);
+
+  /* Special */
+  --color-recording: #ff1493;
+  --color-recording-pulse: rgba(255, 20, 147, 0.35);
+
+  /* Speaker palette — vivid neon */
+  --color-speaker-1: #39ff14;  /* Neon green */
+  --color-speaker-2: #ff1493;  /* Neon pink */
+  --color-speaker-3: #00e5ff;  /* Neon blue */
+  --color-speaker-4: #ffea00;  /* Neon yellow */
+  --color-speaker-5: #d500f9;  /* Neon purple */
+  --color-speaker-6: #ff6d00;  /* Neon orange */
+  --color-speaker-7: #1de9b6;  /* Neon teal */
+  --color-speaker-8: #ff3d71;  /* Neon red */
+}

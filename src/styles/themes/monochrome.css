@@ -1,0 +1,35 @@
+/* monochrome.css - Pure black + white dark theme (no color except speakers) for Voco */
+[data-theme="monochrome"] {
+  /* Backgrounds */
+  --color-background-app: #000000;
+  --color-background-surface: #0d0d0d;
+  --color-background-surface-hover: #1a1a1a;
+  --color-background-elevated: #242424;
+
+  /* Text */
+  --color-text-primary: #f5f5f5;
+  --color-text-secondary: #a3a3a3;
+
+  /* Accent — neutral white/gray */
+  --color-accent: #e5e5e5;
+  --color-accent-hover: #ffffff;
+  --color-accent-text: #ffffff;
+
+  /* Borders */
+  --color-border: rgba(255, 255, 255, 0.12);
+  --color-border-strong: rgba(255, 255, 255, 0.28);
+
+  /* Special */
+  --color-recording: #ffffff;
+  --color-recording-pulse: rgba(255, 255, 255, 0.25);
+
+  /* Speaker palette — the only source of color */
+  --color-speaker-1: #3b82f6;  /* Blue */
+  --color-speaker-2: #10b981;  /* Emerald */
+  --color-speaker-3: #f59e0b;  /* Amber */
+  --color-speaker-4: #ef4444;  /* Red */
+  --color-speaker-5: #8b5cf6;  /* Violet */
+  --color-speaker-6: #ec4899;  /* Pink */
+  --color-speaker-7: #06b6d4;  /* Cyan */
+  --color-speaker-8: #84cc16;  /* Lime */
+}

@@ -1,0 +1,39 @@
+/* sunset.css - Warm dark theme (amber/orange -> rose) for Voco */
+[data-theme="sunset"] {
+  /* Backgrounds */
+  --color-background-app: #1a0f14;
+  --color-background-surface: #241419;
+  --color-background-surface-hover: #301a20;
+  --color-background-elevated: #3a1f27;
+
+  /* Text */
+  --color-text-primary: #fbeee6;
+  --color-text-secondary: #c39b93;
+
+  /* Accent — warm amber/orange */
+  --color-accent: #f97316;
+  --color-accent-hover: #ea580c;
+  --color-accent-text: #fdba74;
+
+  /* Borders */
+  --color-border: rgba(249, 168, 120, 0.12);
+  --color-border-strong: rgba(249, 168, 120, 0.24);
+
+  /* Special */
+  --color-recording: #f43f5e;
+  --color-recording-pulse: rgba(244, 63, 94, 0.3);
+
+  /* Gradients (dual-tone) */
+  --gradient-accent: linear-gradient(135deg, #fbbf24 0%, #f97316 50%, #f43f5e 100%);
+  --gradient-surface: linear-gradient(160deg, #241419 0%, #2e1720 100%);
+
+  /* Speaker palette */
+  --color-speaker-1: #fbbf24;  /* Amber */
+  --color-speaker-2: #f97316;  /* Orange */
+  --color-speaker-3: #f43f5e;  /* Rose */
+  --color-speaker-4: #ec4899;  /* Pink */
+  --color-speaker-5: #d946ef;  /* Fuchsia */
+  --color-speaker-6: #fb7185;  /* Light rose */
+  --color-speaker-7: #f59e0b;  /* Deep amber */
+  --color-speaker-8: #fca5a5;  /* Soft red */
+}

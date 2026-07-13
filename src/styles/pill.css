@@ -1,0 +1,134 @@
+/* pill.css - Styles for floating pill overlay window */
+
+.pill-container {
+  display: flex;
+  align-items: center;
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
+  margin: 4px;
+  padding: 0 10px;
+  border-radius: 999px;
+  box-sizing: border-box;
+  background: rgba(18, 18, 30, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  transition: border-color 0.2s ease, background 0.2s ease;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Light theme support */
+[data-theme="daylight"] .pill-container {
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.1);
+}
+
+.pill-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--color-recording, #ef4444);
+  margin-right: 8px;
+  flex-shrink: 0;
+  box-shadow: 0 0 8px var(--color-recording, #ef4444);
+  animation: pill-pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes pill-pulse {
+  0% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 var(--color-recording-pulse, rgba(239, 68, 68, 0.4));
+  }
+  70% {
+    transform: scale(1.1);
+    box-shadow: 0 0 0 6px var(--color-recording-pulse, rgba(239, 68, 68, 0));
+  }
+  100% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 var(--color-recording-pulse, rgba(239, 68, 68, 0));
+  }
+}
+
+.pill-waveform-wrapper {
+  flex: 1 1 auto;
+  height: 22px;
+  margin-right: 6px;
+  min-width: 0;
+}
+
+.pill-divider {
+  width: 1px;
+  height: 16px;
+  background-color: var(--color-border);
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+
+.pill-text-container {
+  flex-grow: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: none; /* Firefox */
+  display: flex;
+  align-items: center;
+}
+
+.pill-text-container::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+
+.pill-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.pill-text.placeholder {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.pill-actions {
+  display: flex;
+  align-items: center;
+  margin-left: 8px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pill-button {
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.pill-button:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-background-surface-hover);
+}
+
+.pill-button.stop-btn {
+  color: var(--color-recording, #ef4444);
+}
+
+.pill-button.stop-btn:hover {
+  background-color: var(--color-recording-pulse, rgba(239, 68, 68, 0.1));
+}
+
+/* Ensure absolute window transparency in pill window mode */
+html[data-window="pill"],
+html[data-window="pill"] body,
+html[data-window="pill"] #root {
+  background-color: transparent !important;
+}

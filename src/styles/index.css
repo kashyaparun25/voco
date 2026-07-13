@@ -1,0 +1,31 @@
+@import "@astryxdesign/core/reset.css" layer(reset);
+@import "@astryxdesign/core/astryx.css" layer(astryx-base);
+@import "@astryxdesign/theme-neutral/theme.css" layer(astryx-theme);
+
+@import "./themes/midnight.css" layer(theme);
+@import "./themes/daylight.css" layer(theme);
+@import "./themes/aurora.css" layer(theme);
+@import "./themes/sunset.css" layer(theme);
+@import "./themes/ocean.css" layer(theme);
+@import "./themes/monochrome.css" layer(theme);
+@import "./themes/rose.css" layer(theme);
+@import "./themes/neon.css" layer(theme);
+@import "./themes/custom.css" layer(theme);
+@import "./pill.css" layer(components);
+@import "./animations.css";
+
+@layer reset, astryx-base, astryx-theme, theme, base, components, utilities;
+
+@layer base {
+  html, body, #root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: var(--color-background-app);
+    color: var(--color-text-primary);
+    font-family: var(--font-family-body, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif);
+    transition: background-color var(--duration-fast, 150ms) ease, color var(--duration-fast, 150ms) ease;
+  }
+}

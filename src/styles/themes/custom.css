@@ -1,0 +1,42 @@
+/* custom.css - Base tokens for the user-built "Custom" theme.
+ *
+ * The builder overrides a handful of these via inline styles on <html>
+ * (accent, backgrounds, text, border). The values here provide sensible
+ * defaults for every remaining token so the app renders coherently before
+ * and outside those overrides. Derived tokens (hover states, speaker palette)
+ * live only here.
+ */
+[data-theme="custom"] {
+  /* Backgrounds (backgroundApp/Surface/Elevated overridden inline) */
+  --color-background-app: #0a0a12;
+  --color-background-surface: #12121e;
+  --color-background-surface-hover: #1a1a2e;
+  --color-background-elevated: #1e1e32;
+
+  /* Text (primary/secondary overridden inline) */
+  --color-text-primary: #e8e8f0;
+  --color-text-secondary: #9090a8;
+
+  /* Accent (overridden inline) */
+  --color-accent: #7c3aed;
+  --color-accent-hover: #6d28d9;
+  --color-accent-text: #a78bfa;
+
+  /* Borders (border overridden inline) */
+  --color-border: #2a2a3a;
+  --color-border-strong: rgba(255, 255, 255, 0.15);
+
+  /* Special */
+  --color-recording: #ef4444;
+  --color-recording-pulse: rgba(239, 68, 68, 0.3);
+
+  /* Speaker palette */
+  --color-speaker-1: #3b82f6;
+  --color-speaker-2: #10b981;
+  --color-speaker-3: #f59e0b;
+  --color-speaker-4: #ef4444;
+  --color-speaker-5: #8b5cf6;
+  --color-speaker-6: #ec4899;
+  --color-speaker-7: #06b6d4;
+  --color-speaker-8: #84cc16;
+}

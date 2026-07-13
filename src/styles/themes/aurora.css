@@ -1,0 +1,39 @@
+/* aurora.css - Dark theme with gradient accents (purple -> cyan -> green) for Voco */
+[data-theme="aurora"] {
+  /* Backgrounds */
+  --color-background-app: #071018;
+  --color-background-surface: #0c1a24;
+  --color-background-surface-hover: #132734;
+  --color-background-elevated: #16303f;
+
+  /* Text */
+  --color-text-primary: #e6f4f1;
+  --color-text-secondary: #8ba7ab;
+
+  /* Accent — aurora green/cyan */
+  --color-accent: #2dd4bf;
+  --color-accent-hover: #14b8a6;
+  --color-accent-text: #5eead4;
+
+  /* Borders */
+  --color-border: rgba(120, 220, 200, 0.12);
+  --color-border-strong: rgba(120, 220, 200, 0.24);
+
+  /* Special */
+  --color-recording: #f87171;
+  --color-recording-pulse: rgba(248, 113, 113, 0.3);
+
+  /* Gradients (dual-tone) */
+  --gradient-accent: linear-gradient(135deg, #a855f7 0%, #06b6d4 50%, #22c55e 100%);
+  --gradient-surface: linear-gradient(160deg, #0c1a24 0%, #12212e 100%);
+
+  /* Speaker palette */
+  --color-speaker-1: #a855f7;  /* Purple */
+  --color-speaker-2: #22d3ee;  /* Cyan */
+  --color-speaker-3: #4ade80;  /* Green */
+  --color-speaker-4: #f472b6;  /* Pink */
+  --color-speaker-5: #818cf8;  /* Indigo */
+  --color-speaker-6: #2dd4bf;  /* Teal */
+  --color-speaker-7: #facc15;  /* Yellow */
+  --color-speaker-8: #fb923c;  /* Orange */
+}
