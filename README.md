@@ -6,6 +6,10 @@
 
 Talk anywhere and get instant text at your cursor; record meetings and get diarized transcripts with AI summaries — all running locally by default, no cloud required.
 
+<br/>
+
+![Voco — real-time dictation](docs/screenshots/dictation.png)
+
 </div>
 
 ---
@@ -25,6 +29,12 @@ Talk anywhere and get instant text at your cursor; record meetings and get diari
 - **Structured summaries** — Google‑Meet / Granola / Meetily‑style templates (General, Standup, 1:1, Sales, Interview, Retrospective, Decision Log) with proper Markdown tables (action items with owner/due, decisions, topic‑by‑topic notes). Short / medium / detailed length. Long meetings are summarized via adaptive map‑reduce so they never exceed a provider's token limits.
 - **Speaker diarization** — neural pyannote‑based separation, on by default.
 - **Your keys, your models** — per‑task provider/model selection; one connection can serve STT for dictation and an LLM for summaries without collision.
+
+## Screenshots
+
+Real‑time dictation with local models + history (above), and nine built‑in themes plus a custom theme builder:
+
+![Voco — appearance themes](docs/screenshots/themes.png)
 
 ## Requirements
 
