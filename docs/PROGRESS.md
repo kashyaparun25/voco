@@ -374,5 +374,12 @@ Reliability + features pass. Full details in `CHANGELOG.md`. Highlights:
 **Media control**
 - Rewrote pause/resume for macOS 15.4+/26 (MediaRemote is entitlement‑gated) using an entitled `/usr/bin/perl` bridge + bundled helper dylib. Pauses only actually‑playing media, resumes only what Voco paused, and flushes the async command so resume isn't dropped.
 
+**Release & repository**
+- Version bumped to **0.2.0** (`package.json`, `src-tauri/Cargo.toml`, `tauri.conf.json`).
+- npm package + Rust crate renamed `tauri-app` → **`voco`** (lib `tauri_app_lib` → `voco_lib`); bundle executable is now `Voco.app/Contents/MacOS/voco`.
+- `Cargo.toml` metadata filled in (description, author `Arun Kashyap <kashyaparun25@gmail.com>`, `license = "MIT"`); `package.json` `license: MIT`.
+- **MIT `LICENSE`** added; `README.md` fully rewritten; `CHANGELOG.md` added (0.2.0); planning/audit docs moved under `docs/`.
+- `.gitignore` hardened (excludes `.signing/` keys, `src-tauri/target`, generated schemas); git repo initialized and **published: https://github.com/kashyaparun25/voco** (public).
+
 > Detailed rationale for many of these lives in the session memory files under
 > `~/.claude/.../memory/` (settings architecture, meeting‑stop desync, Audio8 provider, build/signing).

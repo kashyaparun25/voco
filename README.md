@@ -111,4 +111,4 @@ scripts/audio8/      dev tools for the Audio8 model (reference server + golden d
 
 ## License
 
-See `LICENSE` (if present). Voco bundles third‑party models and frameworks under their respective licenses.
+[MIT](LICENSE) © Arun Kashyap. Voco bundles third‑party models and frameworks under their respective licenses.

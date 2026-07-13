@@ -3,6 +3,7 @@ name = "voco"
 version = "0.2.0"
 description = "Private, on-device voice dictation & meeting notes for macOS."
 authors = ["Arun Kashyap <kashyaparun25@gmail.com>"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
