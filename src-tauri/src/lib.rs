@@ -33,8 +33,11 @@ fn trigger_dictation(app: &tauri::AppHandle) {
         }
     } else {
         info!("Hotkey: stopping dictation");
+        // Do NOT hide the pill here: transcription + paste are still running.
+        // The pill switches to its processing spinner (dictation-status event)
+        // and the dictation worker hides it AFTER the text is pasted — hiding
+        // it now left users unsure whether the recording registered at all.
         let _ = state.dictation_service.stop();
-        let _ = crate::commands::window::hide_pill(app);
     }
 }
 
@@ -76,6 +79,7 @@ pub fn run() {
     init_logging();
     info!("Voco starting up.");
     tauri::Builder::default()
+        .plugin(tauri_nspanel::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
@@ -99,6 +103,28 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // Turn the pill window into a real nonactivating NSPanel. A plain
+            // NSWindow of a regular app NEVER joins other Spaces or fullscreen
+            // apps, whatever collectionBehavior it's given (verified live:
+            // isOnActiveSpace stayed false over Chrome) — so the pill only ever
+            // showed on Voco's own desktop. show_pill() applies the level /
+            // collection behavior on every show.
+            {
+                use tauri_nspanel::WebviewWindowExt as _;
+                match app.get_webview_window("pill").map(|w| w.to_panel()) {
+                    Some(Ok(panel)) => {
+                        // NSWindowStyleMaskNonactivatingPanel: interacting with
+                        // the pill (stop button) must not steal focus from the
+                        // app the user is dictating into.
+                        panel.set_style_mask(1 << 7);
+                        panel.set_hides_on_deactivate(false);
+                        panel.set_becomes_key_only_if_needed(true);
+                        info!("Pill window converted to nonactivating NSPanel.");
+                    }
+                    other => log::warn!("Pill NSPanel conversion failed: {:?}", other.map(|r| r.map(|_| ()))),
+                }
+            }
+
             // Initialize App Data directory and Database
             let app_data_dir = app.path().app_data_dir().expect("Failed to get app data dir");
             std::fs::create_dir_all(&app_data_dir).expect("Failed to create app data dir");

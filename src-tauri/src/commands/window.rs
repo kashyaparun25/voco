@@ -96,6 +96,25 @@ unsafe fn position_pill_appkit(ns_window: *mut AnyObject) -> bool {
 const PILL_W: f64 = 120.0;
 const PILL_H: f64 = 40.0;
 
+/// Overlay config that makes the pill behave like FluidVoice's HUD panel:
+/// visible on every Space and over fullscreen apps, floating at status level,
+/// immune to app-hide, and ordered in even though Voco is NOT the active app
+/// while the user dictates into Chrome/etc. (plain orderFront can be ignored
+/// for inactive apps). Idempotent — safe to apply repeatedly.
+///
+/// DO NOT reintroduce `window.set_always_on_top(true)` next to this: tao
+/// applies its level via dispatch_async, which lands AFTER these synchronous
+/// msg_sends and clobbers the status level back to floating.
+unsafe fn apply_pill_overlay_config(w: *mut AnyObject) {
+    // canJoinAllSpaces (1<<0) | ignoresCycle (1<<6) | fullScreenAuxiliary (1<<8)
+    let behavior: usize = (1 << 0) | (1 << 6) | (1 << 8);
+    let _: () = msg_send![w, setCollectionBehavior: behavior];
+    let _: () = msg_send![w, setLevel: 25isize]; // NSStatusWindowLevel
+    let _: () = msg_send![w, setCanHide: objc2::runtime::Bool::NO];
+    let _: () = msg_send![w, setHidesOnDeactivate: objc2::runtime::Bool::NO];
+    let _: () = msg_send![w, orderFrontRegardless];
+}
+
 /// Positions the pill near the bottom-center of the monitor the user is working
 /// on (the one containing the cursor) and shows it.
 ///
@@ -152,8 +171,61 @@ pub fn show_pill(app: &AppHandle) -> Result<(), String> {
         }
 
         let _ = window.show();
-        let _ = window.set_always_on_top(true);
-        log::info!("show_pill: pill shown (appkit={})", positioned);
+
+        // Make the pill visible on EVERY Space — other desktops AND fullscreen
+        // apps (e.g. Chrome in fullscreen). Without canJoinAllSpaces the window
+        // belongs to the Space it was created on, so dictating anywhere else
+        // showed the pill only on the "home" desktop. Status level keeps it
+        // above fullscreen app windows.
+        //
+        // DO NOT add `window.set_always_on_top(true)` here: tao applies its
+        // level change via dispatch_async on the main queue, so it lands AFTER
+        // these synchronous msg_sends and clobbers the status level back to
+        // floating (observed live: final level was tao's, not ours). The
+        // window is created `alwaysOnTop` and we own the level below.
+        if let Ok(p) = window.ns_window() {
+            let w = p as *mut AnyObject;
+            unsafe {
+                apply_pill_overlay_config(w);
+                let level_now: isize = msg_send![w, level];
+                let behavior_now: usize = msg_send![w, collectionBehavior];
+                log::info!(
+                    "show_pill: pill shown (appkit={positioned}) level={level_now} behavior=0x{behavior_now:x}"
+                );
+            }
+        } else {
+            log::warn!("show_pill: ns_window() unavailable; Space/level config skipped");
+        }
+
+        // Re-assert after tao's queue drains: tao applies several window ops via
+        // dispatch_async on the main queue (observed live with set_always_on_top's
+        // level), so config applied synchronously above can be silently reverted
+        // a beat later — which left the pill off-screen whenever another app's
+        // Space was active. The delayed pass re-applies everything once the
+        // queued work has run, and logs ground truth (isVisible/isOnActiveSpace).
+        {
+            let app2 = app.clone();
+            let window2 = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let _ = app2.run_on_main_thread(move || {
+                    if let Ok(p) = window2.ns_window() {
+                        let w = p as *mut AnyObject;
+                        unsafe {
+                            apply_pill_overlay_config(w);
+                            let level_now: isize = msg_send![w, level];
+                            let behavior_now: usize = msg_send![w, collectionBehavior];
+                            let visible: objc2::runtime::Bool = msg_send![w, isVisible];
+                            let on_space: objc2::runtime::Bool = msg_send![w, isOnActiveSpace];
+                            log::info!(
+                                "show_pill(+150ms): level={} behavior=0x{:x} visible={} onActiveSpace={}",
+                                level_now, behavior_now, visible.as_bool(), on_space.as_bool()
+                            );
+                        }
+                    }
+                });
+            });
+        }
     });
 
     if let Err(e) = result {

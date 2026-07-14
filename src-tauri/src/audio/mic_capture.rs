@@ -143,9 +143,14 @@ fn run_resampler_loop(
                                 break;
                             }
                             if let Some(ref l_sender) = level_sender {
-                                let sum_sq: f32 = resampled_mono.iter().map(|&s| s * s).sum();
-                                let rms = (sum_sq / (resampled_mono.len() as f32)).sqrt();
-                                let _ = l_sender.send(rms);
+                                // One RMS per 20ms sub-block (not per ~64ms chunk)
+                                // so the UI waveform tracks the voice smoothly.
+                                const LEVEL_BLOCK: usize = 320; // 20ms @ 16kHz
+                                for block in resampled_mono.chunks(LEVEL_BLOCK) {
+                                    if block.is_empty() { continue; }
+                                    let sum_sq: f32 = block.iter().map(|&s| s * s).sum();
+                                    let _ = l_sender.send((sum_sq / block.len() as f32).sqrt());
+                                }
                             }
                         }
                     }

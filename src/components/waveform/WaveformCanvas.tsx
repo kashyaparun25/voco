@@ -7,44 +7,69 @@ interface WaveformCanvasProps {
   rmsProp?: number; // Optional prop to manually control the waveform
 }
 
+/**
+ * Voice-driven scrolling waveform.
+ *
+ * Every incoming RMS level (one per 20ms audio block from the backend) becomes
+ * a bar; bars scroll left as new audio arrives, so the shape IS the recent
+ * amplitude envelope of the user's voice — not a canned animation.
+ *
+ * Real mic levels are tiny and vary hugely with the OS input volume (this
+ * user's speech averages ~0.01 RMS), so bars are normalized adaptively:
+ * a tracked noise floor maps to the baseline and a slowly-decaying peak maps
+ * to full height, with sqrt shaping for perceptual dynamics. Whispering and
+ * shouting both produce a full, honest waveform.
+ */
 export default function WaveformCanvas({ active = true, className, rmsProp }: WaveformCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rmsRef = useRef<number>(0);
+  // Rolling raw-RMS history, newest last. Sized generously; the renderer takes
+  // the last `barCount` entries.
+  const levelsRef = useRef<number[]>([]);
+  const floorRef = useRef(0.004); // adaptive noise floor (snap down, creep up)
+  const peakRef = useRef(0.02); // adaptive peak (snap up, decay down)
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
-  // Sync prop or listen to Tauri events
+  const pushLevel = (rms: number) => {
+    if (!Number.isFinite(rms) || rms < 0) return;
+    const floor = floorRef.current;
+    floorRef.current = rms < floor ? rms : Math.min(floor * 1.02 + 1e-5, rms);
+    peakRef.current = Math.max(peakRef.current * 0.992, rms, floorRef.current + 0.006);
+    const levels = levelsRef.current;
+    levels.push(rms);
+    if (levels.length > 128) levels.splice(0, levels.length - 128);
+  };
+  const pushLevelRef = useRef(pushLevel);
+  pushLevelRef.current = pushLevel;
+
+  // Feed levels: from the prop when provided, else from Tauri events.
   useEffect(() => {
     if (rmsProp !== undefined) {
-      rmsRef.current = rmsProp;
+      pushLevelRef.current(rmsProp);
       return;
     }
 
-    if (!active) {
-      rmsRef.current = 0;
-      return;
+    if (!active) return;
+
+    const unlisteners: Array<() => void> = [];
+    for (const name of ["dictation-audio-level", "audio-level", "audio_level"]) {
+      listen<number>(name, (event) => {
+        if (typeof event.payload === "number") pushLevelRef.current(event.payload);
+      })
+        .then((unsub) => unlisteners.push(unsub))
+        .catch(() => {
+          /* Tauri unavailable */
+        });
     }
-
-    let unlistenAudioLevel: (() => void) | undefined;
-    let unlistenAudioLevelUnderscore: (() => void) | undefined;
-
-    // Listen to "audio-level" Tauri event
-    listen<number>("audio-level", (event) => {
-      const val = typeof event.payload === "number" ? event.payload : 0;
-      rmsRef.current = val;
-    }).then((unsub) => {
-      unlistenAudioLevel = unsub;
-    });
-
-    // Listen to "audio_level" Tauri event (just in case)
-    listen<number>("audio_level", (event) => {
-      const val = typeof event.payload === "number" ? event.payload : 0;
-      rmsRef.current = val;
-    }).then((unsub) => {
-      unlistenAudioLevelUnderscore = unsub;
-    });
 
     return () => {
-      if (unlistenAudioLevel) unlistenAudioLevel();
-      if (unlistenAudioLevelUnderscore) unlistenAudioLevelUnderscore();
+      for (const un of unlisteners) {
+        try {
+          un();
+        } catch {
+          /* no-op */
+        }
+      }
     };
   }, [active, rmsProp]);
 
@@ -56,16 +81,27 @@ export default function WaveformCanvas({ active = true, className, rmsProp }: Wa
     if (!ctx) return;
 
     let animationId: number;
-    const barCount = 18;
-    // Current animated height for each bar (0 to 1)
-    const currentHeights = new Array(barCount).fill(0.05);
-    // Phase for each bar to create a natural idle animation when no signal is present
-    const phases = new Array(barCount).fill(0).map(() => Math.random() * Math.PI * 2);
+    // Fixed bar geometry; the COUNT adapts to the available width. (A fixed
+    // count made bars sub-pixel — 0.6px — inside the 120px pill: invisible.)
+    const BAR_W = 3;
+    const GAP = 2;
+    const MAX_BARS = 64;
+    const BASELINE = 0.1;
+    // Current animated height for each bar slot (0 to 1), newest at the end.
+    const currentHeights = new Array(MAX_BARS).fill(BASELINE);
+
+    // Map a raw RMS to 0..1 against the adaptive floor/peak window.
+    const normalize = (rms: number) => {
+      const floor = floorRef.current;
+      const span = Math.max(peakRef.current - floor, 0.003);
+      const n = Math.max(0, Math.min(1, (rms - floor) / span));
+      return Math.sqrt(n); // perceptual shaping: quiet speech stays visible
+    };
 
     const render = () => {
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
-      
+
       // Handle high-DPI scaling
       if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
         canvas.width = rect.width * dpr;
@@ -75,77 +111,53 @@ export default function WaveformCanvas({ active = true, className, rmsProp }: Wa
 
       const width = rect.width;
       const height = rect.height;
-      
+
       ctx.clearRect(0, 0, width, height);
 
-      const targetRms = rmsRef.current;
-      
-      // Calculate target heights for each bar
-      const targetHeights = new Array(barCount).fill(0);
+      // As many fixed-width bars as fit, drawn centered; the newest audio is
+      // the rightmost bar.
+      const barCount = Math.min(MAX_BARS, Math.max(8, Math.floor((width + GAP) / (BAR_W + GAP))));
+      const levels = levelsRef.current;
       for (let i = 0; i < barCount; i++) {
-        // Create a symmetric dome shape (Gaussian-like distribution)
-        // Center of the waveform is at barCount / 2
-        const distFromCenter = Math.abs(i - (barCount - 1) / 2);
-        const centerFactor = Math.exp(-Math.pow(distFromCenter / (barCount / 3.5), 2));
-        
-        let target = 0.05; // Baseline idle height
-        
-        if (active) {
-          if (targetRms > 0.01) {
-            // Under active signal, compute height based on RMS and center weighting
-            const randomJitter = 0.4 + Math.random() * 0.8;
-            target = targetRms * centerFactor * randomJitter;
-          } else {
-            // Idle animation - a gentle breathing sine wave
-            phases[i] += 0.05;
-            target = 0.05 + 0.12 * Math.sin(phases[i]) * centerFactor;
-          }
+        const levelIdx = levels.length - barCount + i;
+        let target = BASELINE;
+        if (activeRef.current && levelIdx >= 0) {
+          target = BASELINE + (1 - BASELINE) * normalize(levels[levelIdx]);
         }
-        
-        // Clamp target
-        targetHeights[i] = Math.max(0.05, Math.min(1.0, target));
+        // Fast attack, slower release — but bars mostly move by scrolling.
+        const rate = target > currentHeights[i] ? 0.5 : 0.3;
+        currentHeights[i] += (target - currentHeights[i]) * rate;
+      }
+      if (!activeRef.current && levels.length) {
+        // Session over: let the old envelope drain out instead of freezing.
+        levels.splice(0, Math.max(1, Math.ceil(levels.length / 20)));
       }
 
-      // Smoothly interpolate current heights to target heights
-      for (let i = 0; i < barCount; i++) {
-        // Faster upward response, slower downward decay for a responsive feel
-        const rate = targetHeights[i] > currentHeights[i] ? 0.35 : 0.18;
-        currentHeights[i] += (targetHeights[i] - currentHeights[i]) * rate;
-      }
+      const accentColor =
+        getComputedStyle(document.documentElement).getPropertyValue("--color-accent").trim() ||
+        "#7c3aed";
 
-      // Draw bars
-      const padding = 2;
-      const totalSpacing = padding * (barCount - 1);
-      const barWidth = (width - totalSpacing) / barCount;
-
-      // Color/Gradient setup
-      // Retrieve theme color from computed style or fallback to a gorgeous gradient
-      const accentColor = getComputedStyle(document.documentElement)
-        .getPropertyValue("--color-accent")
-        .trim() || "#7c3aed";
-      
       const gradient = ctx.createLinearGradient(0, height, 0, 0);
       gradient.addColorStop(0, accentColor);
       gradient.addColorStop(1, "#a78bfa"); // Lighter violet for peak
 
+      const xOffset = (width - (barCount * (BAR_W + GAP) - GAP)) / 2;
       for (let i = 0; i < barCount; i++) {
-        const barHeight = currentHeights[i] * height;
-        const x = i * (barWidth + padding);
+        const barHeight = Math.max(currentHeights[i] * height, 2);
+        const x = xOffset + i * (BAR_W + GAP);
         const y = (height - barHeight) / 2; // Center vertically
 
-        // Draw rounded rectangle
         ctx.fillStyle = gradient;
         ctx.beginPath();
         if (ctx.roundRect) {
-          ctx.roundRect(x, y, barWidth, barHeight, barWidth / 2);
+          ctx.roundRect(x, y, BAR_W, barHeight, BAR_W / 2);
         } else {
-          // Fallback roundRect implementation
-          const r = barWidth / 2;
+          const r = BAR_W / 2;
           ctx.moveTo(x + r, y);
-          ctx.arcTo(x + barWidth, y, x + barWidth, y + barHeight, r);
-          ctx.arcTo(x + barWidth, y + barHeight, x, y + barHeight, r);
+          ctx.arcTo(x + BAR_W, y, x + BAR_W, y + barHeight, r);
+          ctx.arcTo(x + BAR_W, y + barHeight, x, y + barHeight, r);
           ctx.arcTo(x, y + barHeight, x, y, r);
-          ctx.arcTo(x, y, x + barWidth, y, r);
+          ctx.arcTo(x, y, x + BAR_W, y, r);
         }
         ctx.fill();
       }
@@ -158,7 +170,7 @@ export default function WaveformCanvas({ active = true, className, rmsProp }: Wa
     return () => {
       cancelAnimationFrame(animationId);
     };
-  }, [active]);
+  }, []);
 
   return (
     <canvas

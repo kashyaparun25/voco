@@ -24,6 +24,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "protocol-asset"] }
+# Converts the pill window into a real NSPanel (nonactivating). A regular
+# NSWindow in a regular-activation app never joins other Spaces/fullscreen
+# apps regardless of collectionBehavior (verified live: isOnActiveSpace stayed
+# false); NSPanel is how FluidVoice/Raycast-style overlays do it.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-store = "2"
