@@ -2,6 +2,39 @@
 
 All notable changes to Voco. Dates are the day work landed.
 
+## [0.3.0] — 2026-07-14
+
+A dictation-reliability release: transcription that works at any mic level, a
+pill that shows up everywhere, and Parakeet as the new default local model.
+
+### Added
+- **Parakeet TDT 0.6B v3** (istupakov int8 ONNX export) as the dictation
+  model — punctuated, capitalized output at ~0.85s for 8s of audio. The
+  embedded engine now handles the v3 fused export (int32 token inputs,
+  required LSTM states, one-call prediction+joint decoding, space-separated
+  vocab with explicit `<blk>`).
+- **Real voice waveform in the pill.** Bars are a scrolling render of the
+  live mic amplitude (20ms resolution), normalized adaptively between the
+  room's noise floor and a decaying peak — honest at any input volume.
+- **Processing spinner.** Stopping keeps the pill up with a spinner through
+  transcription; it disappears only after the text is pasted, so a stop
+  always gives visible feedback.
+- **"No speech detected" toast** (with a mic-level hint) when a session ends
+  without detectable speech — sessions no longer vanish silently.
+
+### Fixed
+- **Dictation missing words or whole sessions on quiet mics.** The energy VAD
+  now tracks an adaptive noise floor instead of a fixed threshold, the whole
+  session is buffered from t0 with the VAD only annotating the speech
+  envelope (late triggers can't drop words), audio is peak-normalized before
+  STT, sub-1s clips are padded (whisper.cpp asserts on shorter buffers), and
+  the capture tail is drained so the final phoneme survives.
+- **Pill invisible over other Spaces/fullscreen apps** (e.g. Chrome on
+  another display). The pill is now a real nonactivating NSPanel
+  (tauri-nspanel) with canJoinAllSpaces + fullScreenAuxiliary at status
+  window level — and interacting with it no longer steals focus from the app
+  being dictated into.
+
 ## [0.2.0] — 2026-07-13
 
 A large reliability + features pass focused on the meeting/dictation pipeline, a
