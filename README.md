@@ -23,6 +23,35 @@ Talk anywhere and get instant text at your cursor; record meetings and get diari
 - **Import & re‑process** — drop in an audio file (mp3/m4a/wav/flac) to transcribe it, or re‑run transcription on any saved recording.
 - **Local‑first** — embedded speech‑to‑text (Whisper, Parakeet, Audio8‑ASR) and optional embedded LLM summaries run entirely on your Mac. Cloud providers (OpenAI, Groq, NVIDIA, Ollama, LM Studio) are optional.
 
+## Install
+
+> **Apple Silicon (arm64), macOS 12+.** Voco is **ad‑signed but not notarized** (it's a free, open‑source app with no paid Apple Developer account), so the installers below strip the Gatekeeper quarantine flag for you — no scary warnings.
+
+### Homebrew (recommended)
+
+```bash
+brew install --cask kashyaparun25/voco/voco
+```
+
+Upgrade with `brew upgrade --cask voco`, remove with `brew uninstall --cask voco`.
+
+### One‑line install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kashyaparun25/voco/main/scripts/install.sh | bash
+```
+
+Downloads the latest release DMG, copies **Voco.app** to `/Applications`, and clears quarantine.
+
+### Manual (DMG)
+
+Download the latest `Voco_x.y.z_aarch64.dmg` from the [Releases page](https://github.com/kashyaparun25/voco/releases/latest), open it, and drag **Voco** into Applications. Because the build isn't notarized, the **first** launch needs one extra step (once only):
+
+- **Right‑click** `Voco.app` → **Open** → **Open**, or
+- run `xattr -cr /Applications/Voco.app` in Terminal.
+
+On first launch, grant the permissions Voco requests (Microphone, Screen Recording, Accessibility, Input Monitoring) — the in‑app **Getting Started** page walks you through them.
+
 ## Highlights
 
 - **Instant, clip‑free capture** — a pre‑armed ("warm") microphone means the first word is never cut off, with **no persistent orange mic indicator** (the mic only turns on while you dictate).
