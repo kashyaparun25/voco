@@ -8,6 +8,12 @@ A large reliability + features pass focused on the meeting/dictation pipeline, a
 new local STT engine, and a fresh brand.
 
 ### Added
+- **Seamless install.** Prebuilt DMG on [GitHub Releases](https://github.com/kashyaparun25/voco/releases),
+  a Homebrew cask (`brew install --cask kashyaparun25/voco/voco`), and a one‑line
+  `curl | bash` installer (`scripts/install.sh`). Release DMGs are ad‑hoc signed
+  (`src-tauri/tauri.release.conf.json`) and built by CI on version tags
+  (`.github/workflows/release.yml`); the Homebrew/one‑line paths clear the
+  Gatekeeper quarantine flag so unsigned builds open without warnings.
 - **New 3D "Waveform‑V" brand.** App icon (dock/Finder/tray, full `.icns`/`.ico`
   set), favicon, and the in‑app sidebar mark are now an audio‑waveform whose
   envelope traces a "V" (voice made visible). Master source: `public/logo.svg`.
