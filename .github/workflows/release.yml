@@ -18,9 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm >= 10 required: pnpm-workspace.yaml uses the allowBuilds-only
+      # format, which pnpm 9's `pnpm store path` rejects ("packages field
+      # missing or empty"). Matches the pnpm 11 used for local dev.
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11
 
       - uses: actions/setup-node@v4
         with:
