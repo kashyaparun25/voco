@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use std::collections::VecDeque;
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
@@ -277,6 +279,15 @@ impl DictationService {
         let (audio_sender, audio_receiver) = unbounded::<Vec<f32>>();
         let (level_sender, level_receiver) = unbounded::<f32>();
 
+        // Liveness flag: flipped true once ANY audio frame reaches the processing
+        // loop. A long-lived warm-mic CoreAudio input unit can silently stop
+        // delivering after repeated pause/resume (no error, just no callbacks) —
+        // the watchdog below uses this to detect that and self-heal.
+        let got_audio = Arc::new(AtomicBool::new(false));
+        // Sender clones held for a possible fresh-capture recovery (see watchdog).
+        let wd_audio_sender = audio_sender.clone();
+        let wd_level_sender = level_sender.clone();
+
         // 4. Start capture FIRST — before the (slower) VAD load. Prefer the
         // pre-built "warm" mic (near-instant play(); no build latency, no clipped
         // onset). Rebuild it if the device changed; fall back to on-demand capture
@@ -331,6 +342,8 @@ impl DictationService {
         let warm_mic_clone = self.warm_mic.clone();
         let status_clone = self.status.clone();
         let app_handle_clone = app_handle.clone();
+        let got_audio_thread = got_audio.clone();
+        let device_name_rebuild = device_name.clone();
         // History: persist each dictation (transcript + short audio clip).
         let db_hist = self.db.clone();
         let model_hist = model_id.clone();
@@ -363,6 +376,10 @@ impl DictationService {
             });
 
             while let Ok(samples) = audio_receiver.recv() {
+                // Mark that audio is genuinely flowing (silence counts — the
+                // resampler emits chunks even when quiet; only a dead stream
+                // sends nothing). The watchdog relies on this.
+                got_audio_thread.store(true, Ordering::Relaxed);
                 // Check if we were stopped from outside
                 if !matches!(*status_clone.lock(), DictationStatus::Recording) {
                     break;
@@ -516,7 +533,56 @@ impl DictationService {
             *status_clone.lock() = DictationStatus::Idle;
             let _ = app_handle_clone.emit("dictation-status", DictationStatus::Idle);
             info!("Dictation service is back to Idle.");
+
+            // Rebuild the warm mic FRESH for the next session. Reusing one
+            // long-lived CoreAudio input unit across many pause/resume cycles is
+            // what eventually goes silent; a freshly built stream (played once,
+            // like the meeting capture) stays reliable. Built here at idle — off
+            // the hotkey path — so the next start is still instant. build() does
+            // no hardware IO until play(), so no mic indicator appears.
+            {
+                let wm = warm_mic_clone.clone();
+                let dev = device_name_rebuild.clone();
+                std::thread::spawn(move || match WarmMic::build(dev.as_deref()) {
+                    Ok(w) => { *wm.lock() = Some(w); info!("Warm mic rebuilt for next dictation."); }
+                    Err(e) => { error!("Warm mic rebuild failed: {:?}", e); *wm.lock() = None; }
+                });
+            }
         });
+
+        // Self-heal watchdog (warm path only — a fresh capture can't be stale).
+        // If no audio reaches the processing loop shortly after start, the warm
+        // CoreAudio unit resumed without actually delivering samples: stop it,
+        // transparently switch to a freshly built capture feeding the same
+        // channel, and discard the stale warm mic so it's rebuilt next time.
+        if started_warm {
+            let wd_status = self.status.clone();
+            let wd_warm = self.warm_mic.clone();
+            let wd_cap = self.active_capture.clone();
+            let wd_dev = device_name.clone();
+            let wd_got = got_audio.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(600));
+                if !matches!(*wd_status.lock(), DictationStatus::Recording) {
+                    return; // already stopped/processing — nothing to heal
+                }
+                if wd_got.load(Ordering::Relaxed) {
+                    return; // audio is flowing — healthy
+                }
+                error!("Dictation: no mic audio after 600ms — warm stream is stale; recovering with a fresh capture.");
+                if let Some(w) = wd_warm.lock().as_ref() {
+                    w.stop(); // silence the dead stream so only the fresh one feeds
+                }
+                match start_capture(wd_dev.as_deref(), wd_audio_sender, Some(wd_level_sender)) {
+                    Ok(cap) => {
+                        *wd_cap.lock() = Some(cap);
+                        info!("Dictation: recovered with a fresh capture stream.");
+                    }
+                    Err(e) => error!("Dictation: recovery capture failed: {:?}", e),
+                }
+                *wd_warm.lock() = None; // discard the stale warm mic (rebuilt next start)
+            });
+        }
 
         Ok(())
     }
