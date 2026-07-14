@@ -33,7 +33,7 @@ use std::sync::Mutex;
 use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
 use ort::session::Session;
-use ort::value::Tensor;
+use ort::value::{Tensor, TensorElementType, ValueType};
 
 use crate::stt::engine::{
     EngineInfo, PartialResult, ProviderType, SttEngine, TranscriptSegment, TranscriptionResult,
@@ -140,6 +140,14 @@ pub struct ParakeetEngine {
     joiner_io: Option<IoNames>,
     /// Whether decoder and joiner are fused into a single `decoder_joint` model.
     fused_decoder_joint: bool,
+    /// Whether the decoder's integer inputs (targets / target_length) are
+    /// declared `int32`. The v3 int8 export uses int32 where older exports use
+    /// int64 — feeding the wrong width fails at run() with a dtype error.
+    decoder_ids_are_i32: bool,
+    /// Zero-filled initial LSTM states, shaped from the decoder's declared
+    /// state inputs. Fed on the first step of fused decoding (the v3 export
+    /// requires all state inputs on every call).
+    decoder_zero_states: Vec<StateTensor>,
     /// SentencePiece vocabulary (index -> piece).
     vocab: Vec<String>,
     /// Blank token index (last index in the token vocabulary by convention).
@@ -194,12 +202,20 @@ impl ParakeetEngine {
         if vocab.is_empty() {
             return Err(anyhow!("vocab.txt is empty: {}", vocab_path.display()));
         }
-        // By NeMo convention the blank/pad is appended as the final logit index.
-        let blank_id = vocab.len();
+        // Blank id: the v3 exports list the blank explicitly in vocab.txt
+        // ("<blk>", last entry) — and the prediction-network embedding table is
+        // sized to the vocab, so an out-of-vocab id crashes the Gather op.
+        // Fall back to the old NeMo convention (blank appended after the vocab
+        // as the final logit index) only when no explicit blank exists.
+        let blank_id = vocab
+            .iter()
+            .position(|p| p == "<blk>" || p == "<blank>" || p == "<b>")
+            .unwrap_or(vocab.len());
         info!(
-            "Parakeet vocab loaded: {} tokens, blank_id={}",
+            "Parakeet vocab loaded: {} tokens, blank_id={} ({})",
             vocab.len(),
-            blank_id
+            blank_id,
+            if blank_id < vocab.len() { "explicit in vocab" } else { "appended" }
         );
 
         // --- Load sessions ------------------------------------------------------
@@ -252,6 +268,62 @@ impl ParakeetEngine {
                 (dsess, dio, Some(Mutex::new(jsess)), Some(jio), false)
             };
 
+        // The decoder's token inputs differ in width across exports (the v3
+        // int8 export declares int32; older exports int64). Read the declared
+        // dtype so run_decoder feeds matching tensors instead of failing at
+        // inference time with "Unexpected input data type".
+        let decoder_ids_are_i32 = {
+            let tok_name = decoder_io
+                .input_matching(&["targets", "target", "labels", "input_ids", "y"], 0)
+                .unwrap_or_default();
+            decoder.inputs().iter().any(|i| {
+                i.name() == tok_name
+                    && matches!(
+                        i.dtype(),
+                        ValueType::Tensor { ty: TensorElementType::Int32, .. }
+                    )
+            })
+        };
+        info!(
+            "Parakeet decoder token inputs: {}",
+            if decoder_ids_are_i32 { "int32 (v3-style export)" } else { "int64" }
+        );
+
+        // Zero-filled initial LSTM states. The v3 fused export REQUIRES its
+        // state inputs on every call (omitting them fails mid-graph with
+        // "Missing Input: input_states_2"), so the first decode step feeds
+        // zeros. Dynamic dims (batch) resolve to 1; concrete dims are kept.
+        let decoder_zero_states: Vec<StateTensor> = decoder
+            .inputs()
+            .iter()
+            .filter(|i| {
+                let lc = i.name().to_lowercase();
+                lc.contains("state") || lc.contains("hidden") || lc.contains("cell")
+            })
+            .filter_map(|i| match i.dtype() {
+                ValueType::Tensor { ty: TensorElementType::Float32, shape, .. } => {
+                    let dims: Vec<i64> =
+                        shape.iter().map(|&d| if d <= 0 { 1 } else { d }).collect();
+                    let numel = dims.iter().product::<i64>().max(0) as usize;
+                    Some(StateTensor {
+                        name: i.name().to_string(),
+                        shape: dims,
+                        data: vec![0.0; numel],
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        if !decoder_zero_states.is_empty() {
+            info!(
+                "Parakeet decoder state inputs: {:?}",
+                decoder_zero_states
+                    .iter()
+                    .map(|s| (s.name.as_str(), s.shape.clone()))
+                    .collect::<Vec<_>>()
+            );
+        }
+
         // --- Precompute mel filterbank -----------------------------------------
         let mel_filters = mel::mel_filterbank(N_MELS, N_FFT, SAMPLE_RATE, MEL_LOW_HZ, MEL_HIGH_HZ);
 
@@ -263,6 +335,8 @@ impl ParakeetEngine {
             joiner,
             joiner_io,
             fused_decoder_joint,
+            decoder_ids_are_i32,
+            decoder_zero_states,
             vocab,
             blank_id,
             mel_filters,
@@ -391,6 +465,9 @@ impl ParakeetEngine {
         t_frames: usize,
         d_enc: usize,
     ) -> Result<Vec<usize>> {
+        if self.fused_decoder_joint {
+            return self.tdt_greedy_decode_fused(enc, t_frames, d_enc);
+        }
         let mut emitted: Vec<usize> = Vec::new();
 
         // Decoder state: for the very first step, feed the blank/SOS token.
@@ -445,6 +522,154 @@ impl ParakeetEngine {
         Ok(emitted)
     }
 
+    /// Greedy TDT decoding against the FUSED `decoder_joint` export (the
+    /// istupakov v3 layout): ONE session call per step runs the prediction
+    /// network and joint together — encoder frame `[1, D, 1]` + previous token
+    /// + LSTM states in, TDT logits + next states out. The prediction network
+    /// only advances on emitted tokens, so state outputs from blank steps are
+    /// discarded.
+    fn tdt_greedy_decode_fused(
+        &self,
+        enc: &[f32],
+        t_frames: usize,
+        d_enc: usize,
+    ) -> Result<Vec<usize>> {
+        let mut emitted: Vec<usize> = Vec::new();
+        let mut states = self.decoder_zero_states.clone();
+        let mut prev_token = self.blank_id as i64; // blank doubles as SOS
+        let mut t = 0usize;
+
+        while t < t_frames {
+            let enc_frame = &enc[t * d_enc..(t + 1) * d_enc];
+            let mut symbols_this_step = 0usize;
+            loop {
+                let (token, duration, new_states) =
+                    self.run_fused_step(enc_frame, prev_token, &states)?;
+
+                if token == self.blank_id || symbols_this_step >= MAX_SYMBOLS_PER_STEP {
+                    // Blank: keep the old states, advance by the predicted
+                    // duration (>= 1 so decoding always makes progress).
+                    let adv = DURATION_VALUES.get(duration).copied().unwrap_or(1).max(1);
+                    t += adv;
+                    break;
+                }
+
+                emitted.push(token);
+                prev_token = token as i64;
+                states = new_states;
+                symbols_this_step += 1;
+
+                // TDT: a non-blank emission also advances time by its duration.
+                let adv = DURATION_VALUES.get(duration).copied().unwrap_or(0);
+                if adv > 0 {
+                    t += adv;
+                    break;
+                }
+                // duration == 0: stay on this frame and emit again.
+            }
+        }
+
+        Ok(emitted)
+    }
+
+    /// One fused decoder_joint call: returns `(token, duration_bucket, states)`.
+    fn run_fused_step(
+        &self,
+        enc_frame: &[f32],
+        prev_token: i64,
+        states: &[StateTensor],
+    ) -> Result<(usize, usize, Vec<StateTensor>)> {
+        // encoder_outputs is declared [B, D, T]; a single frame is [1, D, 1].
+        let enc_tensor = Tensor::from_array((
+            vec![1i64, enc_frame.len() as i64, 1i64],
+            enc_frame.to_vec(),
+        ))
+        .context("building fused encoder tensor")?;
+
+        let enc_name = self
+            .decoder_io
+            .input_matching(&["encoder_outputs", "encoder"], 0)?;
+        let tok_name = self
+            .decoder_io
+            .input_matching(&["targets", "target", "labels", "input_ids", "y"], usize::MAX)?;
+        let len_name = self
+            .decoder_io
+            .input_matching(&["target_length", "length", "len"], usize::MAX)?;
+
+        let mut named: Vec<(std::borrow::Cow<str>, ort::session::SessionInputValue)> = Vec::new();
+        named.push((enc_name.into(), enc_tensor.into()));
+        if self.decoder_ids_are_i32 {
+            named.push((
+                tok_name.into(),
+                Tensor::from_array((vec![1i64, 1i64], vec![prev_token as i32]))
+                    .context("building fused token tensor (i32)")?
+                    .into(),
+            ));
+            named.push((
+                len_name.into(),
+                Tensor::from_array((vec![1i64], vec![1i32]))
+                    .context("building fused length tensor (i32)")?
+                    .into(),
+            ));
+        } else {
+            named.push((
+                tok_name.into(),
+                Tensor::from_array((vec![1i64, 1i64], vec![prev_token]))
+                    .context("building fused token tensor")?
+                    .into(),
+            ));
+            named.push((
+                len_name.into(),
+                Tensor::from_array((vec![1i64], vec![1i64]))
+                    .context("building fused length tensor")?
+                    .into(),
+            ));
+        }
+        for st in states {
+            let tensor = Tensor::from_array((st.shape.clone(), st.data.clone()))
+                .context("rebuilding fused state tensor")?;
+            named.push((st.name.clone().into(), tensor.into()));
+        }
+
+        let mut session = self
+            .decoder
+            .lock()
+            .map_err(|_| anyhow!("decoder session mutex poisoned"))?;
+        let outputs = session.run(named).context("fused decoder_joint inference failed")?;
+
+        let out_name = self
+            .decoder_io
+            .output_matching(&["outputs", "logits", "output"], 0)?;
+        let value = outputs
+            .get(out_name.as_str())
+            .ok_or_else(|| anyhow!("fused output '{out_name}' missing"))?;
+        let (_, logits) = value
+            .try_extract_tensor::<f32>()
+            .context("extracting fused TDT logits")?;
+        let (token, duration) = split_tdt_logits(logits, self.vocab.len(), self.blank_id);
+
+        // Capture the state outputs, mapped back to their input names.
+        let mut new_states: Vec<StateTensor> = Vec::new();
+        for out in &self.decoder_io.outputs {
+            let lc = out.to_lowercase();
+            if lc.contains("state") || lc.contains("hidden") || lc.contains("cell") {
+                if let Some(v) = outputs.get(out.as_str()) {
+                    if let Ok((sh, sd)) = v.try_extract_tensor::<f32>() {
+                        let in_name = map_state_out_to_in(out, &self.decoder_io.inputs)
+                            .unwrap_or_else(|| out.clone());
+                        new_states.push(StateTensor {
+                            name: in_name,
+                            shape: sh.iter().map(|&d| d).collect(),
+                            data: sd.to_vec(),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok((token, duration, new_states))
+    }
+
     /// Run the decoder / prediction network for `token`, threading LSTM state.
     ///
     /// Returns the decoder output as a flat `Vec<f32>` (the joint network's
@@ -455,12 +680,31 @@ impl ParakeetEngine {
         states: &mut Vec<StateTensor>,
         have_states: &mut bool,
     ) -> Result<Vec<f32>> {
-        // Prediction-network target: a single token id, shape [1, 1].
-        let tok_tensor = Tensor::from_array((vec![1i64, 1i64], vec![token]))
-            .context("building decoder token tensor")?;
-        // Target length: [1] = 1.
-        let len_tensor = Tensor::from_array((vec![1i64], vec![1i64]))
-            .context("building decoder length tensor")?;
+        // Prediction-network target ([1, 1]) and target length ([1] = 1),
+        // built at the integer width the export declares (int32 for the v3
+        // int8 export, int64 for older ones).
+        let (tok_tensor, len_tensor): (
+            ort::session::SessionInputValue,
+            ort::session::SessionInputValue,
+        ) = if self.decoder_ids_are_i32 {
+            (
+                Tensor::from_array((vec![1i64, 1i64], vec![token as i32]))
+                    .context("building decoder token tensor (i32)")?
+                    .into(),
+                Tensor::from_array((vec![1i64], vec![1i32]))
+                    .context("building decoder length tensor (i32)")?
+                    .into(),
+            )
+        } else {
+            (
+                Tensor::from_array((vec![1i64, 1i64], vec![token]))
+                    .context("building decoder token tensor")?
+                    .into(),
+                Tensor::from_array((vec![1i64], vec![1i64]))
+                    .context("building decoder length tensor")?
+                    .into(),
+            )
+        };
 
         let tok_name = self
             .decoder_io
@@ -473,14 +717,14 @@ impl ParakeetEngine {
 
         // Assemble named inputs dynamically so we can thread hidden states.
         let mut named: Vec<(std::borrow::Cow<str>, ort::session::SessionInputValue)> = Vec::new();
-        named.push((tok_name.clone().into(), tok_tensor.into()));
+        named.push((tok_name.clone().into(), tok_tensor));
 
         // Optional target length input.
         if let Ok(len_name) =
             self.decoder_io.input_matching(&["target_length", "length", "len"], usize::MAX)
         {
             if self.decoder_io.inputs.iter().any(|n| n == &len_name) && len_name != tok_name {
-                named.push((len_name.into(), len_tensor.into()));
+                named.push((len_name.into(), len_tensor));
             }
         }
 
@@ -746,10 +990,16 @@ fn load_vocab(path: &Path) -> Result<Vec<String>> {
         .with_context(|| format!("reading {}", path.display()))?;
     let mut v = Vec::new();
     for line in text.lines() {
-        // Some vocab files are "piece\tscore" or "piece id"; take the first
-        // whitespace-delimited field, but preserve the ▁ prefix.
+        // Formats seen in the wild: "piece", "piece\tscore", and "piece id"
+        // (the istupakov v3 export is space-separated). Take the piece and
+        // preserve the ▁ prefix; SentencePiece pieces never contain raw
+        // spaces, so a trailing space-separated integer is an id, not content.
         let piece = line.split('\t').next().unwrap_or(line);
-        // Do not trim spaces inside the piece; only strip trailing CR.
+        let piece = match piece.rsplit_once(' ') {
+            Some((p, id)) if !p.is_empty() && !id.is_empty()
+                && id.chars().all(|c| c.is_ascii_digit()) => p,
+            _ => piece,
+        };
         v.push(piece.trim_end_matches('\r').to_string());
     }
     Ok(v)
