@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use std::collections::VecDeque;
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
 use log::{info, error};
@@ -359,13 +358,25 @@ impl DictationService {
             .unwrap_or(true);
 
         std::thread::spawn(move || {
-            let mut speech_buffer = Vec::new();
-            let mut has_speech_started = false;
-            // Buffer the RAW contiguous audio (not just VAD-passed frames) plus a
-            // short pre-roll, so Whisper receives natural speech with pauses
-            // intact — VAD-only concatenation was clipping/omitting words.
-            const PREROLL_SAMPLES: usize = 12000; // ~0.75s @16kHz (onset insurance)
-            let mut preroll: VecDeque<f32> = VecDeque::new();
+            // FluidVoice-style session capture: buffer the ENTIRE recording from
+            // t0 and let the VAD only ANNOTATE where speech happened. The old
+            // design used the VAD as a gatekeeper (keep audio only after its
+            // first trigger, 0.75s pre-roll) — any late/missed trigger silently
+            // dropped real words, which made quiet mics feel "random".
+            let mut session_buffer: Vec<f32> = Vec::new();
+            // Hard cap so a forgotten toggle can't grow unbounded (~46MB).
+            const MAX_SESSION_SAMPLES: usize = 16000 * 60 * 12; // 12 minutes
+            // Loudest chunk seen this session — reported when nothing was
+            // detected, so a too-quiet mic is diagnosable instead of silent.
+            let mut max_chunk_rms = 0f32;
+            // VAD speech envelope, as offsets into session_buffer: position of
+            // the first "speech started" and the last "speech ended" (the latter
+            // already includes the ~800ms hangover of room tone past the last
+            // word). Used to trim dead air at both ends before STT — long
+            // non-speech stretches make Whisper/Audio8 hallucinate tokens.
+            let mut first_speech_mark: Option<usize> = None;
+            let mut last_speech_end: Option<usize> = None;
+            let mut vad_active = false;
 
             // Handle levels in a background channel
             let level_app_handle = app_handle_clone.clone();
@@ -380,45 +391,54 @@ impl DictationService {
                 // resampler emits chunks even when quiet; only a dead stream
                 // sends nothing). The watchdog relies on this.
                 got_audio_thread.store(true, Ordering::Relaxed);
-                // Check if we were stopped from outside
-                if !matches!(*status_clone.lock(), DictationStatus::Recording) {
-                    break;
+                let stopping = !matches!(*status_clone.lock(), DictationStatus::Recording);
+
+                if !samples.is_empty() {
+                    let sum_sq: f32 = samples.iter().map(|&s| s * s).sum();
+                    max_chunk_rms = max_chunk_rms.max((sum_sq / samples.len() as f32).sqrt());
                 }
 
                 let (vad_change, _speech_samples) = vad.process_samples(&samples);
 
-                // Once speech has started, keep the full raw audio (incl. natural
-                // pauses); before it, keep a rolling pre-roll for the onset.
-                if has_speech_started {
-                    speech_buffer.extend_from_slice(&samples);
-                } else {
-                    preroll.extend(samples.iter().copied());
-                    if preroll.len() > PREROLL_SAMPLES {
-                        let drop = preroll.len() - PREROLL_SAMPLES;
-                        preroll.drain(0..drop);
-                    }
+                if session_buffer.len() < MAX_SESSION_SAMPLES {
+                    session_buffer.extend_from_slice(&samples);
                 }
 
                 if let Some(speech_started) = vad_change {
                     if speech_started {
                         info!("VAD: Speech started");
-                        if !has_speech_started {
-                            has_speech_started = true;
-                            speech_buffer.extend(preroll.iter().copied());
-                            preroll.clear();
+                        vad_active = true;
+                        if first_speech_mark.is_none() {
+                            first_speech_mark = Some(session_buffer.len());
                         }
                         let _ = app_handle_clone.emit("dictation-speech-started", ());
                     } else {
                         info!("VAD: Speech ended");
+                        vad_active = false;
+                        last_speech_end = Some(session_buffer.len());
                         let _ = app_handle_clone.emit("dictation-speech-stopped", ());
-                        
+
                         // In AutoStop mode, automatically stop dictation when speech ends
-                        if dictation_mode == "AutoStop" && has_speech_started {
+                        if dictation_mode == "AutoStop" && first_speech_mark.is_some() {
                             info!("AutoStop: Silence detected after speech. Triggering transcription.");
                             break;
                         }
                     }
                 }
+
+                // Stop AFTER buffering the chunk that carried the stop signal, so
+                // the words spoken right up to the hotkey release are kept.
+                if stopping {
+                    break;
+                }
+            }
+            // Drain whatever the capture already queued so the final phoneme
+            // isn't clipped (FluidVoice does the same synchronous tail drain).
+            while let Ok(samples) = audio_receiver.try_recv() {
+                if session_buffer.len() >= MAX_SESSION_SAMPLES {
+                    break;
+                }
+                session_buffer.extend_from_slice(&samples);
             }
 
             // Processing phase
@@ -426,13 +446,18 @@ impl DictationService {
                 let mut status = status_clone.lock();
                 if matches!(*status, DictationStatus::Recording) {
                     *status = DictationStatus::Processing;
-                    let _ = app_handle_clone.emit("dictation-status", DictationStatus::Processing);
                     true
                 } else {
                     // Stopped from outside, check if we need to transcribe
                     matches!(*status, DictationStatus::Processing)
                 }
             };
+            if should_transcribe {
+                // Emitted here (not only on the in-thread transition) because a
+                // manual stop() flips the status without an AppHandle — the pill
+                // relies on this event to switch to its processing spinner.
+                let _ = app_handle_clone.emit("dictation-status", DictationStatus::Processing);
+            }
 
             // Shut down capture BEFORE transcription so the mic indicator turns
             // off immediately: pause the warm mic (kept warm for next time) and
@@ -443,7 +468,74 @@ impl DictationService {
             let mut cap = active_capture_clone.lock();
             *cap = None;
 
+            // Cut the STT window out of the full session using the VAD envelope:
+            // a generous lead-in before the first detected speech (the VAD
+            // confirms ~150ms late, and quiet onsets can lag more) through the
+            // last detected end (which already includes the hangover). Dead air
+            // outside the envelope makes Whisper/Audio8 hallucinate tokens. If
+            // speech was still active at stop, keep everything to the end.
+            const PRE_PAD_SAMPLES: usize = 2 * 16000; // 2s of onset insurance
+            let mut speech_buffer: Vec<f32> = match first_speech_mark {
+                Some(first) => {
+                    let start = first.saturating_sub(PRE_PAD_SAMPLES);
+                    let end = if vad_active {
+                        session_buffer.len()
+                    } else {
+                        last_speech_end.unwrap_or(session_buffer.len())
+                    };
+                    let end = end.clamp(start, session_buffer.len());
+                    if start > 0 || end < session_buffer.len() {
+                        info!(
+                            "Dictation: windowing session {:.1}s → {:.1}s around detected speech.",
+                            session_buffer.len() as f32 / 16000.0,
+                            (end - start) as f32 / 16000.0
+                        );
+                    }
+                    session_buffer[start..end].to_vec()
+                }
+                None => Vec::new(),
+            };
+            drop(session_buffer);
+
+            if should_transcribe && speech_buffer.is_empty() {
+                // The whole session passed without the VAD ever firing. Tell the
+                // user WHY nothing happened — the most common cause is a mic
+                // signal too quiet to distinguish from the room (low input
+                // volume, wrong device, speaking away from the mic).
+                info!(
+                    "Dictation: no speech detected this session (loudest chunk RMS {:.4}); nothing to transcribe.",
+                    max_chunk_rms
+                );
+                let _ = app_handle_clone.emit(
+                    "dictation-error",
+                    if max_chunk_rms < 0.02 {
+                        "No speech detected — the mic signal was very quiet. Check System Settings → Sound → Input (level and device)."
+                    } else {
+                        "No speech detected in that recording."
+                    },
+                );
+            }
+
             if should_transcribe && !speech_buffer.is_empty() {
+                // Pad sub-1s clips with trailing silence: whisper.cpp asserts on
+                // buffers shorter than 1s (FluidVoice pads for the same reason),
+                // and short bursts like "yes" would otherwise be at risk.
+                const MIN_STT_SAMPLES: usize = 16000;
+                if speech_buffer.len() < MIN_STT_SAMPLES {
+                    speech_buffer.resize(MIN_STT_SAMPLES, 0.0);
+                }
+                // Normalize quiet audio before STT: consumer mic levels often sit
+                // far below full scale (low OS input volume, distance) and both
+                // Whisper and Audio8 degrade or hallucinate on near-silent input.
+                // Gain is capped so noise-only audio isn't amplified into speech.
+                let peak = speech_buffer.iter().fold(0f32, |m, &s| m.max(s.abs()));
+                if peak > 0.0 && peak < 0.5 {
+                    let gain = (0.9 / peak).min(20.0);
+                    for s in speech_buffer.iter_mut() {
+                        *s *= gain;
+                    }
+                    info!("Dictation: normalized audio {:.1}x (peak was {:.3}).", gain, peak);
+                }
                 info!("Transcribing {} speech samples...", speech_buffer.len());
                 // This runs on a plain OS thread (no ambient Tokio reactor), so
                 // drive the async transcription on Tauri's managed runtime.

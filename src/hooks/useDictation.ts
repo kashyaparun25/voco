@@ -203,6 +203,14 @@ export function useDictation(): UseDictationResult {
         safeListen("partial-transcription", (payload) => {
           setPartialText(extractText(payload));
         }),
+        safeListen("dictation-error", (payload) => {
+          const msg = extractText(payload);
+          if (msg) {
+            void import("./useToast")
+              .then(({ showToast }) => showToast(msg, "error"))
+              .catch(() => {});
+          }
+        }),
         safeListen("trigger-dictation-toggle", () => {
           void toggle();
         }),
