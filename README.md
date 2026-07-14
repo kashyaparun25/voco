@@ -8,7 +8,9 @@ Talk anywhere and get instant text at your cursor; record meetings and get diari
 
 <br/>
 
-![Voco — real-time dictation](docs/screenshots/dictation.png)
+![Voco — a tour of every screen](docs/screenshots/voco-tour.gif)
+
+<sub>A quick tour of every screen. Personal data in this demo is blurred.</sub>
 
 </div>
 
@@ -32,9 +34,27 @@ Talk anywhere and get instant text at your cursor; record meetings and get diari
 
 ## Screenshots
 
-Real‑time dictation with local models + history (above), and nine built‑in themes plus a custom theme builder:
+> Personal data (names, transcripts, calendar email, file paths) is blurred in these shots.
 
-![Voco — appearance themes](docs/screenshots/themes.png)
+**Real‑time dictation** — press the hotkey, speak, text lands at your cursor; every clip kept in local history.
+
+![Dictation](docs/screenshots/dictation.png)
+
+**Meetings** — live transcript with neural speaker diarization, and structured AI summaries (Google‑Meet / Granola / Meetily‑style templates, tables, short/medium/detailed).
+
+| Transcript + diarization | AI summary |
+| --- | --- |
+| ![Meeting transcript](docs/screenshots/meeting-transcript.png) | ![Meeting summary](docs/screenshots/meeting-summary.png) |
+
+**Stats** and **themes** — usage dashboard, plus nine built‑in themes and a custom theme builder.
+
+| Stats | Appearance |
+| --- | --- |
+| ![Stats](docs/screenshots/stats.png) | ![Themes](docs/screenshots/themes.png) |
+
+**AI providers & models** — mix local (embedded) and cloud backends, pick a provider/model per task.
+
+![AI providers](docs/screenshots/providers.png)
 
 ## Requirements
 
