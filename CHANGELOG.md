@@ -2,7 +2,7 @@
 
 All notable changes to Voco. Dates are the day work landed.
 
-## [Unreleased]
+## [0.4.2] — 2026-07-19
 
 ### Integrations
 - **MCP server** — coding agents (Claude Code, Cursor, Windsurf, Codex, Zed)

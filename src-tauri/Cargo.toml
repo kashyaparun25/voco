@@ -9,7 +9,7 @@ resolver = "2"
 
 [package]
 name = "voco"
-version = "0.4.1"
+version = "0.4.2"
 description = "Private, on-device voice dictation & meeting notes for macOS."
 authors = ["Arun Kashyap <kashyaparun25@gmail.com>"]
 license = "MIT"
