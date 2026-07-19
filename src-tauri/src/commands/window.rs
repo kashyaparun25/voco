@@ -79,7 +79,7 @@ unsafe fn position_pill_appkit(ns_window: *mut AnyObject) -> bool {
     };
 
     let origin = NsPoint {
-        x: f.origin.x + (f.size.width - PILL_W) / 2.0,
+        x: f.origin.x + (f.size.width - pill_size().0) / 2.0,
         y: f.origin.y + PILL_BOTTOM_MARGIN,
     };
     let _: () = msg_send![ns_window, setFrameOrigin: origin];
@@ -95,6 +95,26 @@ unsafe fn position_pill_appkit(ns_window: *mut AnyObject) -> bool {
 /// compact (~⅓ of the original width) so it doesn't cover the Dock.
 const PILL_W: f64 = 120.0;
 const PILL_H: f64 = 40.0;
+/// Pill used while the live transcript preview is active: compact width,
+/// slightly taller — live words on top, waveform underneath.
+const PILL_W_EXPANDED: f64 = 200.0;
+const PILL_H_EXPANDED: f64 = 58.0;
+
+/// Whether the next `show_pill` should use the expanded (live-preview) size.
+/// Set by the dictation service before showing the pill.
+static PILL_EXPANDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_pill_expanded(expanded: bool) {
+    PILL_EXPANDED.store(expanded, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn pill_size() -> (f64, f64) {
+    if PILL_EXPANDED.load(std::sync::atomic::Ordering::Relaxed) {
+        (PILL_W_EXPANDED, PILL_H_EXPANDED)
+    } else {
+        (PILL_W, PILL_H)
+    }
+}
 
 /// Overlay config that makes the pill behave like FluidVoice's HUD panel:
 /// visible on every Space and over fullscreen apps, floating at status level,
@@ -131,7 +151,8 @@ pub fn show_pill(app: &AppHandle) -> Result<(), String> {
     let app = app.clone();
     let result = app.clone().run_on_main_thread(move || {
         // Force the intended size (overrides any restored/oversized geometry).
-        let _ = window.set_size(LogicalSize::new(PILL_W, PILL_H));
+        let (pw, ph) = pill_size();
+        let _ = window.set_size(LogicalSize::new(pw, ph));
 
         // Primary path: AppKit NSScreen placement on the cursor's display.
         let positioned = window

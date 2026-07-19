@@ -7,12 +7,34 @@ use std::path::Path;
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
 use log::{info, error, warn};
-use crossbeam_channel::unbounded;
+use crossbeam_channel::{unbounded, RecvTimeoutError};
 
 use crate::storage::Database;
 use crate::audio::{start_capture, MicCapture, start_system_capture, SystemCapture, Vad};
 use crate::stt::{WhisperEngine, ModelManager, SttEngine, ApiSttEngine};
 use crate::diarization::{DiarizationEngine, SpeakerClustering};
+
+/// Hard cap on a single VAD speech segment fed to the STT engine. Encoder
+/// self-attention memory grows quadratically with input length, so an
+/// unbounded segment (VAD held open by music / crosstalk / a noisy mic) can
+/// balloon a single inference to tens of GB. 30 s is well within every
+/// engine's comfort zone; segments at the cap are flushed and speech simply
+/// continues into the next segment.
+const MAX_SEGMENT_SAMPLES: usize = 30 * 16000;
+
+/// Upper bound on buffered-but-unmixed system audio (~10 s @ 16 kHz). If the
+/// mic side stalls or lags, system audio waits here instead of growing an
+/// unbounded channel; overflow drops the oldest samples.
+const SYS_PENDING_CAP: usize = 10 * 16000;
+
+/// One utterance handed from the audio mixing thread to the transcription
+/// worker, so slow STT (or a slow remote provider) can never back up live
+/// audio capture.
+struct TranscribeJob {
+    audio: Vec<f32>,
+    start: f64,
+    end: f64,
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum MeetingStatus {
@@ -103,11 +125,34 @@ impl MeetingService {
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or(0.20);
 
-        info!("Starting meeting \"{}\" with model: {}, VAD threshold: {}, Diarization threshold: {}", 
+        // Finalize engine for the post-recording pass: "moss" (joint
+        // transcription + diarization, replaces the live transcript wholesale)
+        // or "pyannote" (speaker relabel only). Defaults to moss; it degrades
+        // to pyannote automatically when the model isn't downloaded or the
+        // recording exceeds the single-pass limit.
+        let finalize_engine = self.db.get_setting("meeting_finalize_engine")
+            .unwrap_or(None)
+            .unwrap_or_else(|| "moss".to_string());
+
+        info!("Starting meeting \"{}\" with model: {}, VAD threshold: {}, Diarization threshold: {}",
               title, model_id, threshold_rms, diarization_threshold);
 
+        // MOSS selected as the meeting transcription model = record-then-
+        // transcribe: no live engine runs during recording (no provisional
+        // captions); the MOSS finalize pass produces the entire diarized
+        // transcript when the meeting stops.
+        let moss_only = moss_selected_as_meeting_engine(&self.db);
+        #[cfg(feature = "moss")]
+        if moss_only {
+            let mp = crate::stt::MossEngine::model_path_default(self.model_manager.models_dir());
+            if !mp.exists() {
+                return Err("The MOSS Transcribe+Diarize model isn't downloaded yet — download it in Settings → AI Providers & Models first.".to_string());
+            }
+            info!("MOSS-only meeting mode: live captions disabled, full transcript generated on stop.");
+        }
+
         // 2. Load STT Engine (Lazy Loading)
-        let engine = {
+        let engine: Option<Arc<dyn SttEngine>> = if moss_only { None } else { Some({
             let mut cache = self.engine_cache.lock();
             
             // Meeting transcription can use its own provider; fall back to the
@@ -176,6 +221,22 @@ impl MeetingService {
                         }
                         #[cfg(not(feature = "audio8"))]
                         { return Err("Audio8 support is not built into this build".to_string()); }
+                    } else if model_id.contains("moss") {
+                        // Unreachable in practice (moss_only short-circuits
+                        // above), but kept so this loader can never fall into
+                        // the Whisper branch with a MOSS model id.
+                        #[cfg(feature = "moss")]
+                        {
+                            let mp = crate::stt::moss::MossEngine::model_path_default(self.model_manager.models_dir());
+                            if !mp.exists() {
+                                return Err("The MOSS Transcribe+Diarize model isn't downloaded yet — download it in Settings → AI Providers & Models first.".to_string());
+                            }
+                            let eng = crate::stt::moss::MossSttEngine::new(&mp, crate::stt::stt_language(&self.db))
+                                .map_err(|e| format!("Failed to load MOSS engine: {:?}", e))?;
+                            Arc::new(eng) as Arc<dyn SttEngine>
+                        }
+                        #[cfg(not(feature = "moss"))]
+                        { return Err("MOSS support is not built into this build".to_string()); }
                     } else {
                         info!("Loading local Whisper model: {}", model_id);
                         let model_path = self.model_manager.get_model_path(&model_id)
@@ -209,7 +270,7 @@ impl MeetingService {
             } else {
                 cache.as_ref().unwrap().1.clone()
             }
-        };
+        })};
 
         // 3. Create Meeting in DB
         let meeting_id = uuid::Uuid::new_v4().to_string();
@@ -246,6 +307,78 @@ impl MeetingService {
         let active_meeting_id_clone = self.active_meeting_id.clone();
         let save_audio_thread = save_audio;
         let recordings_dir_thread = recordings_dir.clone();
+        let models_dir_thread = self.model_manager.models_dir().clone();
+        let finalize_engine_thread = finalize_engine.clone();
+
+        // Transcription worker: owns the STT engine and per-segment speaker
+        // matching, consumes utterances from the mixing thread via a channel.
+        // Keeping inference off the mixing thread means a slow model or remote
+        // provider can never back up live audio capture.
+        let (job_tx, job_rx) = unbounded::<TranscribeJob>();
+        let worker_handle = engine.map(|engine| {
+            let db = self.db.clone();
+            let app_handle = app_handle.clone();
+            let meeting_id = meeting_id.clone();
+            let clustering_engine = clustering_engine.clone();
+            let diarizer = diarizer.clone();
+            std::thread::spawn(move || {
+                let mut transcribe_error_notified = false;
+                while let Ok(job) = job_rx.recv() {
+                    let text = match tauri::async_runtime::block_on(engine.transcribe(&job.audio)) {
+                        Ok(res) => res.text.trim().to_string(),
+                        Err(e) => {
+                            error!("Meeting transcription error: {:?}", e);
+                            // Surface it once so the user knows why the
+                            // transcript went quiet (bad API key, quota /
+                            // credits exhausted, network down, …).
+                            if !transcribe_error_notified {
+                                transcribe_error_notified = true;
+                                let _ = app_handle.emit("meeting-error", serde_json::json!({
+                                    "meeting_id": meeting_id,
+                                    "message": format!("Transcription failed — recording continues but no new text will appear. ({})", e),
+                                }));
+                            }
+                            String::new()
+                        }
+                    };
+                    if text.is_empty() {
+                        continue;
+                    }
+
+                    let embedding = diarizer.extract_embedding(&job.audio, 16000.0);
+                    let (speaker_id, speaker_name) =
+                        clustering_engine.lock().match_or_create_speaker(&embedding);
+
+                    let segment_id = uuid::Uuid::new_v4().to_string();
+                    if let Err(e) = db.add_segment(
+                        &segment_id,
+                        &meeting_id,
+                        Some(&speaker_id),
+                        job.start,
+                        job.end,
+                        &text,
+                    ) {
+                        error!("Failed to save meeting segment: {:?}", e);
+                    }
+
+                    let event_payload = serde_json::json!({
+                        "meeting_id": meeting_id,
+                        "segment": {
+                            "id": segment_id,
+                            "meeting_id": meeting_id.clone(),
+                            "speaker_id": Some(speaker_id.clone()),
+                            "speaker_name": speaker_name,
+                            "start_time": job.start,
+                            "end_time": job.end,
+                            "text": text,
+                            "created_at": chrono::Utc::now().to_rfc3339()
+                        }
+                    });
+                    let _ = app_handle.emit("meeting-transcript-update", event_payload);
+                }
+            })
+        });
+        let live_stt = worker_handle.is_some();
 
         std::thread::spawn(move || {
             let mut speech_buffer = Vec::new();
@@ -261,11 +394,16 @@ impl MeetingService {
 
             // Full recording buffer — accumulated when saving audio to disk or
             // when the neural-diarization finalize pass needs the whole recording.
-            let accumulate_audio = save_audio_thread || cfg!(feature = "neural-diarization");
+            let accumulate_audio =
+                save_audio_thread || cfg!(feature = "neural-diarization") || cfg!(feature = "moss");
             let mut full_audio: Vec<f32> = Vec::new();
-            // Emit a transcription-failure notice at most once per meeting so a
-            // dead remote provider (e.g. out of credits) doesn't spam the UI.
-            let mut transcribe_error_notified = false;
+
+            // System audio waiting to be mixed. The channel is drained fully
+            // every tick into this aligned FIFO (bounded by SYS_PENDING_CAP),
+            // so the two capture clocks can never accumulate an unbounded
+            // backlog or drift progressively out of sync.
+            let mut sys_pending: VecDeque<f32> = VecDeque::new();
+            let mut sys_overflow_warned = false;
 
             // Crash-safe audio: while recording we ALWAYS stream the mixed audio to
             // a raw f32 sidecar on disk (flushed ~1×/sec), regardless of the "save
@@ -300,20 +438,56 @@ impl MeetingService {
                     // Drain queues to avoid buildup while paused
                     while let Ok(_) = mic_receiver.try_recv() {}
                     while let Ok(_) = sys_receiver.try_recv() {}
+                    sys_pending.clear();
                     std::thread::sleep(Duration::from_millis(50));
                     continue;
                 }
 
-                // Block on mic_receiver
-                match mic_receiver.recv() {
-                    Ok(mic_samples) => {
-                        let mut mixed_samples = mic_samples.clone();
-                        // Non-blocking read system audio
-                        if let Ok(sys_samples) = sys_receiver.try_recv() {
-                            let len = mixed_samples.len().min(sys_samples.len());
-                            for i in 0..len {
-                                mixed_samples[i] = (mixed_samples[i] + sys_samples[i]) * 0.5;
-                            }
+                // Wait for mic audio (the mixing clock), but with a timeout so
+                // a stalled mic stream can't leave the system-audio channel
+                // accumulating unbounded while we block.
+                let mic_samples = match mic_receiver.recv_timeout(Duration::from_millis(500)) {
+                    Ok(samples) => Some(samples),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        // The audio capture channel closed while we still thought we
+                        // were recording — the mic/system-audio stream died (device
+                        // unplugged, format change, OS revoked access, …). Don't stop
+                        // silently: log it and tell the UI so it can notify the user
+                        // instead of leaving a ghost timer running forever.
+                        error!("Meeting audio capture channel closed unexpectedly — stopping recording.");
+                        let _ = app_handle_clone.emit("meeting-error", serde_json::json!({
+                            "meeting_id": meeting_id_clone,
+                            "message": "Recording stopped: the audio capture device ended unexpectedly. Check your microphone / system-audio input and start again.",
+                        }));
+                        break;
+                    }
+                };
+
+                // Drain ALL pending system audio into the aligned FIFO (the old
+                // one-chunk-per-mic-chunk drain let the queue back up and the
+                // mix drift out of sync whenever the two clocks disagreed).
+                while let Ok(sys_samples) = sys_receiver.try_recv() {
+                    sys_pending.extend(sys_samples);
+                }
+                if sys_pending.len() > SYS_PENDING_CAP {
+                    let drop_n = sys_pending.len() - SYS_PENDING_CAP;
+                    sys_pending.drain(0..drop_n);
+                    if !sys_overflow_warned {
+                        sys_overflow_warned = true;
+                        warn!("System-audio backlog exceeded {}s; dropping oldest samples (mic stream slow or stalled?)",
+                              SYS_PENDING_CAP / 16000);
+                    }
+                }
+
+                match mic_samples {
+                    Some(mic_samples) => {
+                        let mut mixed_samples = mic_samples;
+                        let n = mixed_samples.len().min(sys_pending.len());
+                        for s in mixed_samples.iter_mut().take(n) {
+                            // pop_front cannot fail here: n <= sys_pending.len()
+                            let sys = sys_pending.pop_front().unwrap_or(0.0);
+                            *s = (*s + sys) * 0.5;
                         }
 
                         let current_time = elapsed_samples as f64 / 16000.0;
@@ -341,12 +515,30 @@ impl MeetingService {
                             }
                         }
 
+                        // Live captioning (VAD → per-utterance STT). Skipped
+                        // entirely in MOSS-only mode: the finalize pass
+                        // transcribes the whole recording at stop.
+                        if live_stt {
                         let (vad_change, _speech_samples) = vad.process_samples(&mixed_samples);
 
                         // While speaking, accumulate raw contiguous audio; while
                         // silent, keep a rolling pre-roll for the next onset.
                         if in_speech {
                             speech_buffer.extend_from_slice(&mixed_samples);
+                            // Hard cap: flush an over-long segment and keep
+                            // going. VAD held open (music, crosstalk, noise)
+                            // must never grow an unbounded buffer — encoder
+                            // memory is quadratic in segment length.
+                            if speech_buffer.len() >= MAX_SEGMENT_SAMPLES {
+                                let segment_end_time = elapsed_samples as f64 / 16000.0;
+                                info!("Meeting VAD: segment hit {}s cap — flushing early", MAX_SEGMENT_SAMPLES / 16000);
+                                let _ = job_tx.send(TranscribeJob {
+                                    audio: std::mem::take(&mut speech_buffer),
+                                    start: segment_start_time,
+                                    end: segment_end_time,
+                                });
+                                segment_start_time = segment_end_time;
+                            }
                         } else {
                             preroll.extend(mixed_samples.iter().copied());
                             if preroll.len() > PREROLL_SAMPLES {
@@ -370,127 +562,77 @@ impl MeetingService {
                                 in_speech = false;
                                 if !speech_buffer.is_empty() {
                                     let segment_end_time = elapsed_samples as f64 / 16000.0;
-                                    
-                                    // Transcribe Segment (plain thread → use Tauri's runtime)
-                                    let text = match tauri::async_runtime::block_on(engine.transcribe(&speech_buffer)) {
-                                        Ok(res) => res.text.trim().to_string(),
-                                        Err(e) => {
-                                            error!("Meeting transcription error: {:?}", e);
-                                            // Surface it once so the user knows why the
-                                            // transcript went quiet (bad API key, quota /
-                                            // credits exhausted, network down, …).
-                                            if !transcribe_error_notified {
-                                                transcribe_error_notified = true;
-                                                let _ = app_handle_clone.emit("meeting-error", serde_json::json!({
-                                                    "meeting_id": meeting_id_clone,
-                                                    "message": format!("Transcription failed — recording continues but no new text will appear. ({})", e),
-                                                }));
-                                            }
-                                            "".to_string()
-                                        }
-                                    };
-
-                                    if !text.is_empty() {
-                                        // Diarize Segment
-                                        let embedding = diarizer.extract_embedding(&speech_buffer, 16000.0);
-                                        let (speaker_id, speaker_name) = clustering_engine.lock().match_or_create_speaker(&embedding);
-
-                                        // Persist Segment
-                                        let segment_id = uuid::Uuid::new_v4().to_string();
-                                        if let Err(e) = db_clone.add_segment(
-                                            &segment_id,
-                                            &meeting_id_clone,
-                                            Some(&speaker_id),
-                                            segment_start_time,
-                                            segment_end_time,
-                                            &text
-                                        ) {
-                                            error!("Failed to save meeting segment: {:?}", e);
-                                        }
-
-                                        // Emit Update Event
-                                        let event_payload = serde_json::json!({
-                                            "meeting_id": meeting_id_clone,
-                                            "segment": {
-                                                "id": segment_id,
-                                                "meeting_id": meeting_id_clone.clone(),
-                                                "speaker_id": Some(speaker_id.clone()),
-                                                "speaker_name": speaker_name,
-                                                "start_time": segment_start_time,
-                                                "end_time": segment_end_time,
-                                                "text": text,
-                                                "created_at": chrono::Utc::now().to_rfc3339()
-                                            }
-                                        });
-                                        let _ = app_handle_clone.emit("meeting-transcript-update", event_payload);
-                                    }
-
-                                    speech_buffer.clear();
+                                    let _ = job_tx.send(TranscribeJob {
+                                        audio: std::mem::take(&mut speech_buffer),
+                                        start: segment_start_time,
+                                        end: segment_end_time,
+                                    });
                                 }
                             }
                         }
+                        } // if live_stt
                     }
-                    Err(_) => {
-                        // The audio capture channel closed while we still thought we
-                        // were recording — the mic/system-audio stream died (device
-                        // unplugged, format change, OS revoked access, …). Don't stop
-                        // silently: log it and tell the UI so it can notify the user
-                        // instead of leaving a ghost timer running forever.
-                        error!("Meeting audio capture channel closed unexpectedly — stopping recording.");
-                        let _ = app_handle_clone.emit("meeting-error", serde_json::json!({
-                            "meeting_id": meeting_id_clone,
-                            "message": "Recording stopped: the audio capture device ended unexpectedly. Check your microphone / system-audio input and start again.",
-                        }));
-                        break;
-                    }
+                    // Mic timed out: nothing to mix this tick (the system-audio
+                    // drain above already ran). Keep polling for status/stop.
+                    None => {}
                 }
             }
 
             // Flush remaining speech buffer on finish
             if !speech_buffer.is_empty() {
                 let segment_end_time = elapsed_samples as f64 / 16000.0;
-                let text = match tauri::async_runtime::block_on(engine.transcribe(&speech_buffer)) {
-                    Ok(res) => res.text.trim().to_string(),
-                    Err(e) => {
-                        error!("Meeting final flush transcription error: {:?}", e);
-                        "".to_string()
-                    }
-                };
+                let _ = job_tx.send(TranscribeJob {
+                    audio: std::mem::take(&mut speech_buffer),
+                    start: segment_start_time,
+                    end: segment_end_time,
+                });
+            }
 
-                if !text.is_empty() {
-                    let embedding = diarizer.extract_embedding(&speech_buffer, 16000.0);
-                    let (speaker_id, speaker_name) = clustering_engine.lock().match_or_create_speaker(&embedding);
-                    let segment_id = uuid::Uuid::new_v4().to_string();
-                    let _ = db_clone.add_segment(
-                        &segment_id,
-                        &meeting_id_clone,
-                        Some(&speaker_id),
-                        segment_start_time,
-                        segment_end_time,
-                        &text
-                    );
+            // Close the job channel and wait for the transcription worker to
+            // drain — every segment must be in the DB before the diarization
+            // finalize pass relabels them.
+            drop(job_tx);
+            if let Some(handle) = worker_handle {
+                if let Err(e) = handle.join() {
+                    error!("Transcription worker panicked: {:?}", e);
+                }
+            }
 
-                    let event_payload = serde_json::json!({
-                        "meeting_id": meeting_id_clone,
-                        "segment": {
-                            "id": segment_id,
-                            "meeting_id": meeting_id_clone.clone(),
-                            "speaker_id": Some(speaker_id.clone()),
-                            "speaker_name": speaker_name,
-                            "start_time": segment_start_time,
-                            "end_time": segment_end_time,
-                            "text": text,
-                            "created_at": chrono::Utc::now().to_rfc3339()
+            // MOSS finalize pass: one joint transcription + diarization run
+            // over the whole recording, replacing the provisional live
+            // transcript (text AND speakers). Falls back to the pyannote
+            // relabel pass below when unavailable.
+            #[allow(unused_mut, unused_variables)]
+            let mut moss_finalized = false;
+            #[cfg(feature = "moss")]
+            {
+                if (finalize_engine_thread == "moss" || moss_only) && !full_audio.is_empty() {
+                    let _ = app_handle_clone.emit("meeting-diarizing", serde_json::json!({ "meeting_id": meeting_id_clone, "status": "running" }));
+                    match run_moss_finalize(&db_clone, &app_handle_clone, &meeting_id_clone, &full_audio, &models_dir_thread) {
+                        Ok(()) => {
+                            moss_finalized = true;
+                            info!("MOSS finalize pass replaced the live transcript for meeting {}", meeting_id_clone);
                         }
-                    });
-                    let _ = app_handle_clone.emit("meeting-transcript-update", event_payload);
+                        Err(e) => {
+                            warn!("MOSS finalize unavailable ({}); falling back to pyannote relabel.", e);
+                            // In MOSS-only mode there is no provisional
+                            // transcript to fall back to — tell the user.
+                            if moss_only {
+                                let _ = app_handle_clone.emit("meeting-error", serde_json::json!({
+                                    "meeting_id": meeting_id_clone,
+                                    "message": format!("MOSS transcription failed: {}. The recording is saved — you can Reprocess it after fixing the issue.", e),
+                                }));
+                            }
+                        }
+                    }
+                    let _ = app_handle_clone.emit("meeting-diarizing", serde_json::json!({ "meeting_id": meeting_id_clone, "status": "done" }));
                 }
             }
 
             // Neural diarization finalize pass (pyannote via speakrs) — runs once
             // over the full recording and emits real speaker turns to the UI.
             #[cfg(feature = "neural-diarization")]
-            {
+            if !moss_finalized {
                 if !full_audio.is_empty() {
                     info!("Running neural diarization over {} samples...", full_audio.len());
                     let _ = app_handle_clone.emit("meeting-diarizing", serde_json::json!({ "meeting_id": meeting_id_clone, "status": "running" }));
@@ -556,7 +698,11 @@ impl MeetingService {
 
             // Save the mixed recording to disk (16kHz mono f32 WAV) if enabled,
             // and remember its path so the UI can offer playback + export.
-            if save_audio_thread && !full_audio.is_empty() {
+            // Also force-saved when a MOSS-only meeting failed its finalize
+            // pass: the WAV is then the ONLY copy of the meeting, and saving
+            // it makes Reprocess possible.
+            let force_save_for_recovery = moss_only && !moss_finalized;
+            if (save_audio_thread || force_save_for_recovery) && !full_audio.is_empty() {
                 let _ = std::fs::create_dir_all(&recordings_dir_thread);
                 let path = recordings_dir_thread.join(format!("{}.wav", meeting_id_clone));
                 let spec = hound::WavSpec {
@@ -678,7 +824,17 @@ impl MeetingService {
     /// Run VAD → STT → diarization over `samples` on a background thread, writing
     /// segments into an existing `meeting_id`. Shared by import and reprocess.
     fn spawn_transcription_job(&self, app_handle: AppHandle, meeting_id: String, samples: Vec<f32>) -> Result<(), String> {
-        let engine = load_stt_engine_from_settings(&self.db, &self.model_manager)?;
+        // MOSS as the meeting engine: skip the per-utterance VAD→STT pass —
+        // the MOSS finalize below transcribes + diarizes the file in one go.
+        let moss_only = moss_selected_as_meeting_engine(&self.db);
+        #[cfg(feature = "moss")]
+        if moss_only {
+            let mp = crate::stt::MossEngine::model_path_default(self.model_manager.models_dir());
+            if !mp.exists() {
+                return Err("The MOSS Transcribe+Diarize model isn't downloaded yet — download it in Settings → AI Providers & Models first.".to_string());
+            }
+        }
+        let engine = if moss_only { None } else { Some(load_stt_engine_from_settings(&self.db, &self.model_manager)?) };
 
         let threshold_rms = self.db.get_setting("vad_threshold").unwrap_or(None).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.015);
         let speech_ms = self.db.get_setting("vad_speech_ms").unwrap_or(None).and_then(|s| s.parse::<u32>().ok()).unwrap_or(150);
@@ -687,6 +843,10 @@ impl MeetingService {
 
         let diarizer = Arc::new(DiarizationEngine::new());
         let clustering = Arc::new(Mutex::new(SpeakerClustering::new(self.db.clone(), diarization_threshold)));
+
+        let finalize_engine = self.db.get_setting("meeting_finalize_engine")
+            .unwrap_or(None)
+            .unwrap_or_else(|| "moss".to_string());
 
         let db = self.db.clone();
         let models_dir = self.model_manager.models_dir().clone();
@@ -698,8 +858,10 @@ impl MeetingService {
             const CHUNK: usize = 1600; // 100ms
             const PREROLL_SAMPLES: usize = 4800;
 
-            let mut vad = Vad::new(threshold_rms, speech_ms, hangover_ms, &models_dir);
             let total = samples.len();
+
+            if let Some(engine) = engine {
+            let mut vad = Vad::new(threshold_rms, speech_ms, hangover_ms, &models_dir);
 
             // Transcribe + diarize + persist + emit one segment.
             let process = |buf: &[f32], start: f64, end: f64| {
@@ -739,6 +901,14 @@ impl MeetingService {
                 let (vad_change, _sp) = vad.process_samples(chunk);
                 if in_speech {
                     speech_buffer.extend_from_slice(chunk);
+                    // Same hard cap as live recording: never feed an unbounded
+                    // segment into the quadratic-memory encoder.
+                    if speech_buffer.len() >= MAX_SEGMENT_SAMPLES {
+                        let t = pos as f64 / SR;
+                        process(&speech_buffer, segment_start_time, t);
+                        speech_buffer.clear();
+                        segment_start_time = t;
+                    }
                 } else {
                     preroll.extend(chunk.iter().copied());
                     if preroll.len() > PREROLL_SAMPLES {
@@ -768,10 +938,39 @@ impl MeetingService {
             if !speech_buffer.is_empty() {
                 process(&speech_buffer, segment_start_time, total as f64 / SR);
             }
+            } // if let Some(engine)
+
+            // MOSS finalize pass — replaces the provisional VAD+STT transcript
+            // with the joint transcription+diarization result. Falls back to
+            // the pyannote relabel pass below when unavailable.
+            #[allow(unused_mut, unused_variables)]
+            let mut moss_finalized = false;
+            #[cfg(feature = "moss")]
+            {
+                if (finalize_engine == "moss" || moss_only) && !samples.is_empty() {
+                    let _ = app.emit("meeting-diarizing", serde_json::json!({ "meeting_id": mid, "status": "running" }));
+                    match run_moss_finalize(&db, &app, &mid, &samples, &models_dir) {
+                        Ok(()) => {
+                            moss_finalized = true;
+                            info!("MOSS finalize pass replaced the imported transcript for meeting {}", mid);
+                        }
+                        Err(e) => {
+                            warn!("MOSS finalize unavailable ({}); falling back to pyannote relabel.", e);
+                            if moss_only {
+                                let _ = app.emit("meeting-error", serde_json::json!({
+                                    "meeting_id": mid,
+                                    "message": format!("MOSS transcription failed: {}", e),
+                                }));
+                            }
+                        }
+                    }
+                    let _ = app.emit("meeting-diarizing", serde_json::json!({ "meeting_id": mid, "status": "done" }));
+                }
+            }
 
             // Neural diarization finalize pass over the whole imported file.
             #[cfg(feature = "neural-diarization")]
-            {
+            if !moss_finalized {
                 info!("Running neural diarization over imported audio ({} samples)...", samples.len());
                 let _ = app.emit("meeting-diarizing", serde_json::json!({ "meeting_id": mid, "status": "running" }));
                 if let Ok(mut nd) = crate::diarization::NeuralDiarizer::new() {
@@ -840,6 +1039,120 @@ impl MeetingService {
             Err("Meeting is not paused, cannot resume".to_string())
         }
     }
+}
+
+/// True when the meeting transcription engine is set to the embedded MOSS
+/// joint model — i.e. record-then-transcribe mode: no live captions during
+/// recording, the MOSS finalize pass generates the whole diarized transcript
+/// at stop. Mirrors the provider/model fallback chain used at engine load.
+fn moss_selected_as_meeting_engine(db: &Database) -> bool {
+    if !cfg!(feature = "moss") {
+        return false;
+    }
+    let provider = db.get_setting("meeting_stt_provider").unwrap_or(None)
+        .or_else(|| db.get_setting("default_stt_provider").unwrap_or(None))
+        .unwrap_or_else(|| "embedded".to_string());
+    if provider != "embedded" {
+        return false;
+    }
+    let model = db.get_setting("meeting_stt_model").unwrap_or(None)
+        .or_else(|| db.get_setting("dictation_stt_model").unwrap_or(None))
+        .unwrap_or_default();
+    model.contains("moss")
+}
+
+/// Run the MOSS-Transcribe-Diarize finalize pass: one joint transcription +
+/// diarization inference over the whole recording, then replace the meeting's
+/// stored segments wholesale (both text and speaker labels come from the same
+/// pass, eliminating the STT↔diarization overlap-stitching). Emits the same
+/// `meeting-diarization` / `meeting-transcript-update` events as the pyannote
+/// pass so the UI needs no changes.
+///
+/// Errors are soft: the caller falls back to the pyannote relabel pass, and
+/// the provisional live transcript is only cleared *after* MOSS succeeds.
+#[cfg(feature = "moss")]
+fn run_moss_finalize(
+    db: &Database,
+    app: &AppHandle,
+    meeting_id: &str,
+    audio: &[f32],
+    models_dir: &Path,
+) -> Result<(), String> {
+    use crate::stt::moss::{MossEngine, MAX_AUDIO_SAMPLES};
+
+    let model_path = MossEngine::model_path_default(models_dir);
+    if !model_path.exists() {
+        return Err(format!("MOSS model not downloaded ({})", model_path.display()));
+    }
+    if audio.len() > MAX_AUDIO_SAMPLES {
+        return Err(format!(
+            "recording is {} min — beyond the {} min single-pass limit",
+            audio.len() / 16_000 / 60,
+            MAX_AUDIO_SAMPLES / 16_000 / 60
+        ));
+    }
+
+    let engine = MossEngine::new(&model_path).map_err(|e| e.to_string())?;
+    let lang = crate::stt::stt_language(db);
+    let segs = engine
+        .transcribe_diarized(audio, lang.as_deref())
+        .map_err(|e| e.to_string())?;
+
+    // Trailing-silence hallucination guard: the model sometimes invents a
+    // short utterance right at the end of the audio (observed: a "Yeah."
+    // starting 5 ms before EOF). Drop segments that start in the final 250 ms
+    // and clamp ends to the recording duration.
+    let duration = audio.len() as f64 / 16_000.0;
+    let segs: Vec<_> = segs
+        .into_iter()
+        .filter(|s| s.start < duration - 0.25)
+        .map(|mut s| {
+            s.end = s.end.min(duration);
+            s
+        })
+        .collect();
+
+    // Merge consecutive utterances from the same speaker (≤1 s apart) into
+    // one turn so the transcript reads as paragraphs, not one-liners.
+    let segs = crate::stt::moss::merge_same_speaker(segs, 1.0, 600);
+    if segs.is_empty() {
+        return Err("MOSS produced an empty transcript".to_string());
+    }
+    info!("MOSS finalize: {} diarized segments after merging", segs.len());
+
+    // Replace the provisional transcript wholesale — only after a successful
+    // inference, so a MOSS failure never loses the live transcript.
+    db.clear_segments(meeting_id)
+        .map_err(|e| format!("failed to clear provisional transcript: {:?}", e))?;
+
+    let mut ensured = std::collections::HashSet::new();
+    for s in &segs {
+        let spk_id = format!("moss_{}_{}", meeting_id, s.speaker);
+        if ensured.insert(spk_id.clone()) {
+            let _ = db.upsert_speaker(&spk_id, &format!("Speaker {}", s.speaker));
+        }
+        let seg_id = uuid::Uuid::new_v4().to_string();
+        if let Err(e) = db.add_segment(&seg_id, meeting_id, Some(&spk_id), s.start, s.end, &s.text) {
+            error!("Failed to save MOSS segment: {:?}", e);
+        }
+    }
+
+    // Speaker turns for the timeline, in the same shape the pyannote pass
+    // emits ("SPEAKER_00"-style labels, zero-based).
+    let payload = serde_json::json!({
+        "meeting_id": meeting_id,
+        "turns": segs.iter().map(|s| serde_json::json!({
+            "start": s.start,
+            "end": s.end,
+            "speaker": format!("SPEAKER_{:02}", s.speaker.saturating_sub(1)),
+        })).collect::<Vec<_>>(),
+    });
+    let _ = app.emit("meeting-diarization", payload);
+    let _ = app.emit(
+        "meeting-transcript-update",
+        serde_json::json!({ "meeting_id": meeting_id, "reload": true }),
+    );
+    Ok(())
 }
 
 /// Recover audio left behind by an unclean shutdown. During recording we stream
@@ -939,6 +1252,16 @@ fn load_stt_engine_from_settings(
             let dir = crate::stt::ParakeetEngine::model_dir_default(model_manager.models_dir());
             let eng = crate::stt::ParakeetEngine::new(&dir)
                 .map_err(|e| format!("Failed to load Parakeet engine: {:?}", e))?;
+            return Ok(Arc::new(eng));
+        }
+        #[cfg(feature = "moss")]
+        if model_id.contains("moss") {
+            let mp = crate::stt::moss::MossEngine::model_path_default(model_manager.models_dir());
+            if !mp.exists() {
+                return Err("The MOSS Transcribe+Diarize model isn't downloaded yet — download it in Settings → AI Providers & Models first.".to_string());
+            }
+            let eng = crate::stt::moss::MossSttEngine::new(&mp, crate::stt::stt_language(db))
+                .map_err(|e| format!("Failed to load MOSS engine: {:?}", e))?;
             return Ok(Arc::new(eng));
         }
         let model_path = model_manager

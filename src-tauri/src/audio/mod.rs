@@ -1,4 +1,5 @@
 pub mod mixer;
+pub mod packet_ring;
 pub mod decode;
 pub mod resampler;
 pub mod mic_capture;

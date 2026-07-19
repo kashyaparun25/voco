@@ -164,6 +164,21 @@ const SUPPORTED_BUNDLES: &[BundleModel] = &[BundleModel {
         BundleFile { url: "https://huggingface.co/AutoArk-AI/Audio8-ASR-0.1B-onnx-runtime/resolve/main/model_bundle/weights/token_embedding.npy", dest: "weights/token_embedding.npy" },
         BundleFile { url: "https://huggingface.co/AutoArk-AI/Audio8-ASR-0.1B-onnx-runtime/resolve/main/model_bundle/weights/audio_projector.npz", dest: "weights/audio_projector.npz" },
     ],
+}, BundleModel {
+    // MOSS-Transcribe-Diarize 0.9B (joint STT + speaker diarization), GGUF
+    // Q8_0 from the transcribe.cpp project's validated conversion. Used as
+    // the meeting finalize engine (offline single-pass, en/zh). Q8_0 over
+    // Q4_K_M: the 4-bit quant has documented tail failures (empty outputs,
+    // en→zh drift).
+    id: "moss-transcribe-diarize",
+    name: "MOSS Transcribe+Diarize 0.9B (GGUF)",
+    subdir: "moss-transcribe-diarize",
+    category: "stt",
+    size_bytes: 987_000_000,
+    files: &[BundleFile {
+        url: "https://huggingface.co/handy-computer/MOSS-Transcribe-Diarize-gguf/resolve/main/MOSS-Transcribe-Diarize-Q8_0.gguf",
+        dest: "MOSS-Transcribe-Diarize-Q8_0.gguf",
+    }],
 }];
 
 /// A user-added model pointing at an arbitrary download URL.

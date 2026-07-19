@@ -9,11 +9,16 @@ pub mod parakeet;
 #[cfg(feature = "audio8")]
 pub mod audio8;
 
+#[cfg(feature = "moss")]
+pub mod moss;
+
 pub use engine::{SttEngine, TranscriptionResult, TranscriptSegment, WordTimestamp, PartialResult, EngineInfo, ProviderType};
 #[cfg(feature = "parakeet")]
 pub use parakeet::ParakeetEngine;
 #[cfg(feature = "audio8")]
 pub use audio8::Audio8Engine;
+#[cfg(feature = "moss")]
+pub use moss::MossEngine;
 pub use whisper::WhisperEngine;
 pub use manager::{ModelManager, ModelInfo, CustomModel};
 pub use api::ApiSttEngine;

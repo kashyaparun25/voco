@@ -60,6 +60,7 @@ export default function MeetingSettings() {
   const [autoSummarize, setAutoSummarize] = useState<boolean>(true);
   const [autoDetectSpeakers, setAutoDetectSpeakers] = useState<boolean>(true);
   const [maxSpeakers, setMaxSpeakers] = useState<string>("4");
+  const [finalizeEngine, setFinalizeEngine] = useState<string>("moss");
 
   useEffect(() => {
     const load = async () => {
@@ -70,6 +71,8 @@ export default function MeetingSettings() {
         if (ads != null) setAutoDetectSpeakers(ads === "true");
         const ms = await invoke<string | null>("get_setting", { key: "max_speakers" });
         if (ms) setMaxSpeakers(ms);
+        const fe = await invoke<string | null>("get_setting", { key: "meeting_finalize_engine" });
+        if (fe) setFinalizeEngine(fe);
       } catch (err) {
         console.warn("MeetingSettings: failed to load settings:", err);
       }
@@ -97,6 +100,33 @@ export default function MeetingSettings() {
       <VStack gap={2} style={{ width: "100%" }}>
         <Text style={subheadStyle}>Transcription (Speech-to-Text)</Text>
         <EngineSelector providerKey="meeting_stt_provider" modelKey="meeting_stt_model" category="stt" />
+        <Text style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
+          Tip: choosing "moss-transcribe-diarize" here uses MOSS for everything — no live
+          captions while recording; the full transcript with speaker labels is generated
+          in one pass when the meeting ends.
+        </Text>
+      </VStack>
+
+      {/* Finalize pass: what runs over the full recording after stop */}
+      <VStack gap={2} style={{ maxWidth: 480 }}>
+        <Text style={subheadStyle}>Final pass (after recording ends)</Text>
+        <select
+          value={finalizeEngine}
+          onChange={(e) => {
+            setFinalizeEngine(e.target.value);
+            void persist("meeting_finalize_engine", e.target.value);
+          }}
+          style={selectStyle}
+        >
+          <option value="moss">MOSS Transcribe + Diarize — rewrites the transcript with accurate speaker labels (English/Chinese)</option>
+          <option value="pyannote">Speaker relabel only (pyannote) — keeps the live transcript text</option>
+        </select>
+        <Text style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
+          MOSS re-transcribes the whole recording in one pass, so text and speaker labels
+          come from the same model. Requires the "MOSS Transcribe+Diarize 0.9B" model
+          (987 MB) from the model list; if it isn't downloaded, the pass falls back to
+          pyannote automatically.
+        </Text>
       </VStack>
 
       {/* Auto-summarize + summary LLM engine */}

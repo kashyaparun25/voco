@@ -1,5 +1,6 @@
 pub mod dictation;
 pub mod export;
+pub mod focus;
 pub mod text_injector;
 pub mod text_processing;
 pub mod media_control;
