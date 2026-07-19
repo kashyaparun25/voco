@@ -91,43 +91,26 @@ const SettingsIcon = () => (
   </svg>
 );
 
-/** Voco brand mark: an audio waveform whose envelope traces a "V" — voice made visible. */
+/** Voco brand mark: one continuous stroke — a voice wave that dips into a V,
+ *  then coils into a spiral O ("Vo" drawn in a single line). Graphite mist. */
 const LogoIcon = () => (
   <svg
     width={28}
     height={28}
-    viewBox="0 0 1024 1024"
+    viewBox="0 0 100 100"
     xmlns="http://www.w3.org/2000/svg"
-    style={{ borderRadius: 8, boxShadow: "0 2px 4px rgba(0, 0, 0, 0.2)", display: "block" }}
+    style={{ borderRadius: 8, background: "#16191D", display: "block" }}
     aria-label="Voco"
     role="img"
   >
-    <defs>
-      <linearGradient id="vocoTile" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stopColor="#3ee7d7" />
-        <stop offset="0.55" stopColor="#159fd8" />
-        <stop offset="1" stopColor="#0b60c9" />
-      </linearGradient>
-      <linearGradient id="vocoBar" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stopColor="#ffffff" />
-        <stop offset="1" stopColor="#cdf3ff" />
-      </linearGradient>
-      <linearGradient id="vocoGloss" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stopColor="#ffffff" stopOpacity="0.42" />
-        <stop offset="0.6" stopColor="#ffffff" stopOpacity="0" />
-      </linearGradient>
-    </defs>
-    <rect x="16" y="16" width="992" height="992" rx="232" fill="url(#vocoTile)" />
-    <rect x="16" y="16" width="992" height="520" rx="232" fill="url(#vocoGloss)" />
-    <g fill="url(#vocoBar)">
-      <rect x="115" y="230" width="86" height="564" rx="43" />
-      <rect x="233" y="333" width="86" height="358" rx="43" />
-      <rect x="351" y="418" width="86" height="188" rx="43" />
-      <rect x="469" y="470" width="86" height="84" rx="43" />
-      <rect x="587" y="418" width="86" height="188" rx="43" />
-      <rect x="705" y="333" width="86" height="358" rx="43" />
-      <rect x="823" y="230" width="86" height="564" rx="43" />
-    </g>
+    <path
+      d="M 16.9 57.2 L 23.4 57.2 L 26.2 50.7 L 32.0 74.5 L 41.3 41.7 L 43.4 39.4 L 45.9 37.6 L 48.7 36.1 L 51.6 35.2 L 54.5 34.7 L 57.5 34.7 L 60.4 35.2 L 63.2 36.2 L 65.7 37.6 L 67.9 39.3 L 69.8 41.4 L 71.3 43.7 L 72.4 46.2 L 73.1 48.8 L 73.3 51.5 L 73.1 54.1 L 72.5 56.6 L 71.5 59.0 L 70.2 61.1 L 68.5 62.9 L 66.6 64.5 L 64.5 65.6 L 62.2 66.5 L 59.9 66.9 L 57.6 66.9 L 55.4 66.6 L 53.2 65.9 L 51.3 64.9 L 49.5 63.6 L 48.0 62.0 L 46.8 60.3 L 46.0 58.4 L 45.4 56.5 L 45.2 54.5 L 45.3 52.5 L 45.8 50.7 L 46.5 48.9 L 47.4 47.3 L 48.6 45.9 L 50.0 44.8 L 51.5 43.9 L 53.1 43.3 L 54.8 43.0 L 56.4 43.0 L 58.0 43.2 L 59.6 43.7 L 60.9 44.4 L 62.1 45.3 L 63.2 46.3 L 64.0 47.5 L 64.6 48.8 L 64.9 50.1 L 65.1 51.4 L 65.0 52.7 L 64.7 54.0 L 64.2 55.1 L 63.6 56.1 L 62.8 57.0 L 61.9 57.7 L 60.9 58.2"
+      fill="none"
+      stroke="#AEB9C2"
+      strokeWidth="5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
   </svg>
 );
 
@@ -208,14 +191,47 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
   const [scrollToSegmentId, setScrollToSegmentId] = useState<string | null>(null);
   const [isFirstRunOpen, setIsFirstRunOpen] = useState(false);
 
-  // First-run onboarding (once), guarded by localStorage.
+  // First-run onboarding (once), guarded by the "onboarding_complete" setting.
+  // Migration: honor the legacy localStorage flag, and don't re-show for
+  // existing users who already have a model downloaded — auto-mark complete.
   useEffect(() => {
-    try {
-      if (localStorage.getItem("voco-onboarding-done") !== "true") {
-        setIsFirstRunOpen(true);
+    let cancelled = false;
+    (async () => {
+      try {
+        const done = await invoke<string | null>("get_setting", { key: "onboarding_complete" });
+        if (done === "true") return;
+
+        let legacyDone = false;
+        try { legacyDone = localStorage.getItem("voco-onboarding-done") === "true"; } catch { /* ignore */ }
+
+        let hasModel = false;
+        if (!legacyDone) {
+          try {
+            const models = await invoke<any[]>("list_models");
+            hasModel = Array.isArray(models) && models.some((m) => m.is_downloaded);
+          } catch { /* ignore */ }
+        }
+
+        if (legacyDone || hasModel) {
+          invoke("set_setting", { key: "onboarding_complete", value: "true" }).catch(() => {});
+          return;
+        }
+        if (!cancelled) setIsFirstRunOpen(true);
+      } catch {
+        // Backend unavailable — fall back to the legacy localStorage guard.
+        try {
+          if (localStorage.getItem("voco-onboarding-done") !== "true" && !cancelled) setIsFirstRunOpen(true);
+        } catch { /* storage unavailable */ }
       }
-    } catch { /* storage unavailable */ }
+    })();
+    return () => { cancelled = true; };
   }, []);
+
+  const completeOnboarding = () => {
+    invoke("set_setting", { key: "onboarding_complete", value: "true" }).catch(() => {});
+    try { localStorage.setItem("voco-onboarding-done", "true"); } catch { /* ignore */ }
+    setIsFirstRunOpen(false);
+  };
 
   // ── Backend-driven navigation (tray "Settings"/"Start Meeting", etc.) ────
   useEffect(() => {
@@ -957,13 +973,10 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
       {renderContent()}
       <FirstRunOnboarding
         isOpen={isFirstRunOpen}
-        onClose={() => {
-          try { localStorage.setItem("voco-onboarding-done", "true"); } catch { /* ignore */ }
-          setIsFirstRunOpen(false);
-        }}
-        onGoToModels={() => {
-          try { localStorage.setItem("voco-onboarding-done", "true"); } catch { /* ignore */ }
-          setIsFirstRunOpen(false);
+        onComplete={completeOnboarding}
+        onOpenAiSettings={() => {
+          completeOnboarding();
+          setSettingsSection("ai");
           setActiveTab("settings");
         }}
       />
