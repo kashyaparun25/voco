@@ -2,6 +2,21 @@
 
 All notable changes to Voco. Dates are the day work landed.
 
+## [Unreleased]
+
+### Integrations
+- **MCP server** — coding agents (Claude Code, Cursor, Windsurf, Codex, Zed)
+  can read your meetings, transcripts, summaries, notes, and dictation history
+  through a local Model Context Protocol server. Off by default; enable and get
+  per-client setup under Settings → Integrations. Tools: `list_meetings`,
+  `get_meeting`, `get_transcript` (paginated), `search`, `list_dictations`,
+  `get_dictation`, `get_dictionary`, `get_status`, plus resources and prompts.
+- The server is a separate `voco-mcp` binary bundled in the app. It opens the
+  database read-only — it can never change your data — and works whether or not
+  the main app is running. Calls are logged to `~/Library/Logs/Voco-MCP.log`.
+- The database now runs in WAL mode so the sidecar can read while the app
+  writes segments mid-meeting.
+
 ## [0.4.1] — 2026-07-19
 
 A dictation accuracy and latency patch, validated side-by-side against

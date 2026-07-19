@@ -156,6 +156,18 @@ Voco supports several STT engines, selectable per task (Dictation / Meetings) in
 - The mic indicator appears **only while actively dictating/recording** — never at idle.
 - Recordings are stored locally under Application Support (`Save recordings` is opt‑in; a crash‑safety buffer protects in‑progress recordings regardless).
 
+## Coding-agent access (MCP)
+
+Voco ships a local [Model Context Protocol](https://modelcontextprotocol.io) server so coding agents (Claude Code, Cursor, Windsurf, Codex CLI, Zed) can read your meetings, transcripts, summaries, notes, and dictation history on demand — "summarize yesterday's standup", or "put my last dictation into this commit message".
+
+It's off by default. Turn it on under **Settings → Integrations**, which then shows a copy-paste command or JSON for each client, a one-click Cursor link, and a setup prompt you can paste into any agent to have it register Voco itself. For Claude Code:
+
+```
+claude mcp add voco -- /Applications/Voco.app/Contents/MacOS/voco-mcp
+```
+
+The server is a separate `voco-mcp` binary inside the app bundle. It opens `voco.db` read-only — it can never modify your data — and works whether or not the main app is running. Tools: `list_meetings`, `get_meeting`, `get_transcript` (paginated), `search`, `list_dictations`, `get_dictation`, `get_dictionary`, `get_status`. Every call is logged to `~/Library/Logs/Voco-MCP.log`. Design notes in [docs/mcp_integration_plan.md](docs/mcp_integration_plan.md).
+
 ## Project layout
 
 ```
@@ -166,6 +178,9 @@ src-tauri/src/
   llm/               summary prompt/templates, streaming client, engines
   diarization/       neural speaker separation
   audio/             capture (warm mic), mixer, resampler, VAD, system capture
+  commands/mcp.rs    Integrations settings backend (enable, configs, test)
+src-tauri/crates/
+  voco-mcp/          read-only MCP sidecar (stdio JSON-RPC), bundled in the .app
 scripts/audio8/      dev tools for the Audio8 model (reference server + golden dumps)
 ```
 
