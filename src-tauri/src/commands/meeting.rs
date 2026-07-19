@@ -140,10 +140,38 @@ pub fn get_meeting_transcript(state: State<'_, AppState>, meeting_id: String) ->
 }
 
 #[tauri::command]
-pub fn rename_speaker(state: State<'_, AppState>, speaker_id: String, name: String) -> Result<(), String> {
+pub fn rename_meeting(state: State<'_, AppState>, meeting_id: String, title: String) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Title cannot be empty".to_string());
+    }
     let conn = state.db.conn();
-    conn.execute("INSERT OR REPLACE INTO speakers (id, name, created_at) VALUES (?1, ?2, ?3)", 
-                 rusqlite::params![speaker_id, name, chrono::Utc::now().to_rfc3339()])
+    conn.execute(
+        "UPDATE meetings SET title = ?2 WHERE id = ?1",
+        rusqlite::params![meeting_id, title],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Overwrite a meeting's AI notes with user-edited content.
+#[tauri::command]
+pub fn set_meeting_summary(state: State<'_, AppState>, meeting_id: String, summary: String) -> Result<(), String> {
+    state
+        .db
+        .update_meeting_summary(&meeting_id, &summary)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_speaker(state: State<'_, AppState>, speaker_id: String, name: String) -> Result<(), String> {
+    // NEVER `INSERT OR REPLACE` here: REPLACE is DELETE+INSERT, and
+    // segments.speaker_id is `ON DELETE SET NULL` — the delete cascade
+    // silently strips the speaker off every segment (the transcript loses
+    // its diarization). Upsert updates the name in place instead.
+    state
+        .db
+        .upsert_speaker(&speaker_id, &name)
         .map_err(|e| e.to_string())?;
     Ok(())
 }

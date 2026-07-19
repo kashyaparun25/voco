@@ -303,3 +303,101 @@ pub async fn list_upcoming_meetings(state: State<'_, AppState>) -> Result<Vec<Up
     }
     Ok(out)
 }
+
+/// Titles of calendar events within ±2 h of `when` — offered as title
+/// suggestions for a recorded meeting (the event it belonged to, usually).
+/// Fails soft: calendar not connected → empty list.
+#[tauri::command]
+pub async fn list_event_titles_around(
+    state: State<'_, AppState>,
+    when: String,
+) -> Result<Vec<String>, String> {
+    let db = state.db.clone();
+    let access = match valid_access_token(&db).await {
+        Ok(a) => a,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let ts = chrono::DateTime::parse_from_rfc3339(&when)
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(&when, "%Y-%m-%d %H:%M:%S")
+                .map(|n| n.and_utc())
+        })
+        .map_err(|e| format!("Unparseable timestamp {:?}: {}", when, e))?;
+    let min = ts - chrono::Duration::hours(2);
+    let max = ts + chrono::Duration::hours(2);
+    let url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin={}&timeMax={}&singleEvents=true&orderBy=startTime&maxResults=10",
+        enc(&min.to_rfc3339()), enc(&max.to_rfc3339())
+    );
+    let client = reqwest::Client::new();
+    let resp = client.get(&url).bearer_auth(&access).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Ok(Vec::new());
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let mut titles: Vec<String> = Vec::new();
+    if let Some(items) = json["items"].as_array() {
+        for it in items {
+            if let Some(t) = it["summary"].as_str() {
+                if !t.trim().is_empty() && !titles.iter().any(|x| x == t) {
+                    titles.push(t.to_string());
+                }
+            }
+        }
+    }
+    Ok(titles)
+}
+
+/// Attendee names from calendar events overlapping a window around `when`
+/// (RFC3339 or `YYYY-MM-DD HH:MM:SS`). Used as rename suggestions when
+/// mapping diarized speakers to real people: the event that a recorded
+/// meeting belonged to almost always sits within ±2 h of its creation time.
+/// Includes the signed-in user (unlike the upcoming list) — you are usually
+/// one of the speakers. Fails soft: calendar not connected → empty list.
+#[tauri::command]
+pub async fn list_event_attendees_around(
+    state: State<'_, AppState>,
+    when: String,
+) -> Result<Vec<String>, String> {
+    let db = state.db.clone();
+    let access = match valid_access_token(&db).await {
+        Ok(a) => a,
+        Err(_) => return Ok(Vec::new()), // not connected — no suggestions
+    };
+
+    let ts = chrono::DateTime::parse_from_rfc3339(&when)
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(&when, "%Y-%m-%d %H:%M:%S")
+                .map(|n| n.and_utc())
+        })
+        .map_err(|e| format!("Unparseable timestamp {:?}: {}", when, e))?;
+
+    let min = ts - chrono::Duration::hours(2);
+    let max = ts + chrono::Duration::hours(2);
+    let url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin={}&timeMax={}&singleEvents=true&orderBy=startTime&maxResults=10",
+        enc(&min.to_rfc3339()), enc(&max.to_rfc3339())
+    );
+    let client = reqwest::Client::new();
+    let resp = client.get(&url).bearer_auth(&access).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Ok(Vec::new());
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+
+    let mut names: Vec<String> = Vec::new();
+    if let Some(items) = json["items"].as_array() {
+        for it in items {
+            for a in it["attendees"].as_array().map(|v| v.as_slice()).unwrap_or(&[]) {
+                if let Some(n) = a["displayName"].as_str().or_else(|| a["email"].as_str()) {
+                    if !names.iter().any(|x| x == n) {
+                        names.push(n.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(names)
+}

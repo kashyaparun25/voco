@@ -116,6 +116,111 @@ fn template_structure(template: &str) -> &'static str {
 ## Decisions\n| Decision | Rationale | Owner |\n| --- | --- | --- |\n\n\
 ## Open Questions\nBulleted list of unresolved items.\n\n\
 ## Action Items\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "customer_discovery" => "\
+## Overview\nCustomer, company, and why the call happened, in a short paragraph.\n\n\
+## Current Situation\nBullets on their existing process/stack/team and context.\n\n\
+## Pain Points\nBulleted list of every stated problem, with severity/impact where mentioned.\n\n\
+## Goals & Success Criteria\nBullets on what they want to achieve and how they'd measure it.\n\n\
+## Qualification\n| Dimension | Notes |\n| --- | --- |\n(Budget, Authority, Need, Timeline — fill what the conversation supports.)\n\n\
+## Next Steps\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "weekly_team_meeting" => "\
+## Overview\nA short paragraph on the week's focus and overall status.\n\n\
+## Announcements\nBulleted list (omit the section if none).\n\n\
+## Updates by Area\nA `### <Area/Person>` heading per stream, with bullets: progress, plans, problems.\n\n\
+## Discussion Topics\nA `### <Topic>` heading for each substantive discussion, with the key points raised.\n\n\
+## Decisions\nBulleted list with rationale.\n\n\
+## Action Items\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "all_hands" => "\
+## Overview\nWhat this all-hands covered, in a short paragraph.\n\n\
+## Announcements\nBulleted list of company/team announcements.\n\n\
+## Metrics & Progress\nBullets on numbers, milestones, and status shared.\n\n\
+## Presentations\nA `### <Presenter/Topic>` heading per segment with the key points.\n\n\
+## Q&A\n| Question | Answer |\n| --- | --- |\n\n\
+## Action Items\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "board_meeting" => "\
+## Overview\nMeeting purpose, attendees, and headline outcome.\n\n\
+## Business Update\nBullets on performance, metrics, and highlights presented.\n\n\
+## Financials\nBullets on financial results and runway discussed.\n\n\
+## Strategic Topics\nA `### <Topic>` heading per topic with the discussion and viewpoints.\n\n\
+## Votes & Resolutions\n| Item | Outcome |\n| --- | --- |\n\n\
+## Action Items\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "brainstorm" => "\
+## Overview\nThe problem/goal the brainstorm addressed.\n\n\
+## Ideas\nA `### <Idea>` heading for each distinct idea, with bullets: description, who raised it, reactions.\n\n\
+## Themes\nBullets grouping related ideas.\n\n\
+## Shortlisted / Next Ideas to Explore\nBulleted list of what got traction.\n\n\
+## Action Items\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "customer_success" => "\
+## Overview\nCustomer, account context, and health in a short paragraph.\n\n\
+## Current Usage & Adoption\nBullets on how they're using the product.\n\n\
+## Issues & Requests\n| Issue/Request | Severity | Status |\n| --- | --- | --- |\n\n\
+## Renewal / Expansion Signals\nBullets on risks and opportunities.\n\n\
+## Next Steps\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "demo" => "\
+## Overview\nWho the demo was for and the outcome.\n\n\
+## What Was Shown\nBullets per feature/flow demonstrated.\n\n\
+## Reactions & Questions\n| Moment | Reaction/Question |\n| --- | --- |\n\n\
+## Objections\nBulleted list with responses given.\n\n\
+## Next Steps\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "design_review" => "\
+## Overview\nWhat design/work was reviewed and the overall verdict.\n\n\
+## Work Presented\nBullets describing what was shown.\n\n\
+## Feedback\nA `### <Area>` heading per area with the feedback given (attribute who said it).\n\n\
+## Decisions\nBulleted list of what was agreed/changed.\n\n\
+## Action Items\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "investor_update" => "\
+## Overview\nContext of the conversation and headline takeaways.\n\n\
+## Highlights\nBullets on wins and progress shared.\n\n\
+## Metrics\n| Metric | Value / Trend |\n| --- | --- |\n\n\
+## Challenges & Asks\nBullets on problems raised and help requested.\n\n\
+## Investor Feedback\nBulleted list.\n\n\
+## Next Steps\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "kickoff" => "\
+## Overview\nProject, participants, and goal in a short paragraph.\n\n\
+## Goals & Success Criteria\nBulleted list.\n\n\
+## Scope\nBullets: in scope / out of scope.\n\n\
+## Roles & Responsibilities\n| Person | Role |\n| --- | --- |\n\n\
+## Timeline & Milestones\n| Milestone | Date |\n| --- | --- |\n\n\
+## Risks & Open Questions\nBulleted list.\n\n\
+## Action Items\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "okr_planning" => "\
+## Overview\nPlanning period and framing.\n\n\
+## Objectives\nA `### <Objective>` heading per objective, with bullets: key results discussed, owners, targets.\n\n\
+## Debates & Tradeoffs\nBullets on disagreements and how they resolved.\n\n\
+## Final OKRs\n| Objective | Key Result | Owner |\n| --- | --- | --- |\n\n\
+## Action Items\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "performance_review" => "\
+## Overview\nWho, role, and review period.\n\n\
+## Achievements\nBulleted list with evidence discussed.\n\n\
+## Strengths\nBulleted list.\n\n\
+## Growth Areas\nBulleted list with specifics.\n\n\
+## Goals for Next Period\n| Goal | Success Measure |\n| --- | --- |\n\n\
+## Action Items\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "user_research" => "\
+## Overview\nParticipant profile and research goal.\n\n\
+## Key Findings\nBulleted list — the headline insights.\n\n\
+## Observations by Topic\nA `### <Topic/Task>` heading per area, with bullets: what the participant did/said (quote verbatim where powerful).\n\n\
+## Pain Points\nBulleted list.\n\n\
+## Feature Requests & Suggestions\nBulleted list.\n\n\
+## Follow-ups\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "support_call" => "\
+## Overview\nCustomer, issue, and resolution status in a short paragraph.\n\n\
+## Issue Details\nBullets: symptoms, environment, when it started, impact.\n\n\
+## Troubleshooting Performed\nBulleted list of steps tried and results.\n\n\
+## Resolution / Workaround\nBullets on what fixed it or the current state.\n\n\
+## Follow-ups\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "training_session" => "\
+## Overview\nWhat the session taught and who attended.\n\n\
+## Topics Covered\nA `### <Topic>` heading per topic, with the key points, examples, and demos.\n\n\
+## Questions & Answers\n| Question | Answer |\n| --- | --- |\n\n\
+## Resources Mentioned\nBulleted list.\n\n\
+## Follow-ups\n| Owner | Action Item | Due |\n| --- | --- | --- |",
+        "lecture" => "\
+## Overview\nSubject, speaker, and scope of the lecture.\n\n\
+## Key Concepts\nA `### <Concept>` heading per major concept, with bullets explaining it as presented.\n\n\
+## Examples & Case Studies\nBulleted list.\n\n\
+## Questions Raised\nBulleted list (from audience or rhetorical).\n\n\
+## Further Reading / To Review\nBulleted list.",
         // General / default — comprehensive, everything-covered structure.
         _ => "\
 ## Overview\nA short paragraph (2-4 sentences) on the meeting's purpose, participants, and outcome.\n\n\
@@ -130,7 +235,43 @@ fn template_structure(template: &str) -> &'static str {
 /// Generates a prompt for summarizing the transcript based on requested length,
 /// style, and template. Aims for Google-Meet / Granola quality: comprehensive,
 /// well-structured Markdown with tables for action items and structured rows.
+/// Resolve a template id to its section structure. Built-ins come from
+/// `template_structure`; `custom:<id>` templates are user-authored and read
+/// from the `custom_templates` setting (JSON array of
+/// `{id, name, emoji, instructions}`) — falling back to the general structure
+/// if the id is missing or its instructions are empty.
+pub fn resolve_template_structure(db: &Database, template: &str) -> String {
+    if let Some(id) = template.strip_prefix("custom:") {
+        if let Ok(Some(json)) = db.get_setting("custom_templates") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+                for t in v.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                    if t.get("id").and_then(|x| x.as_str()) == Some(id) {
+                        if let Some(instr) = t.get("instructions").and_then(|x| x.as_str()) {
+                            if !instr.trim().is_empty() {
+                                return instr.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return template_structure("general").to_string();
+    }
+    template_structure(template).to_string()
+}
+
 pub fn generate_summary_prompt(transcript: &str, length: &str, style: &str, template: &str) -> String {
+    generate_summary_prompt_with_structure(transcript, length, style, &template_structure(template).to_string())
+}
+
+/// Variant taking an already-resolved section structure (built-in or custom —
+/// see `resolve_template_structure`).
+pub fn generate_summary_prompt_with_structure(
+    transcript: &str,
+    length: &str,
+    style: &str,
+    structure: &str,
+) -> String {
     let length_instruction = match length {
         "short" => "LENGTH: Keep it brief — include only the Overview and Action Items sections; a few tight bullets. Skip other sections unless critical.",
         "long" => "LENGTH: Be thorough and comprehensive, like detailed minutes. Cover EVERY topic end-to-end under Key Discussion Points with all relevant specifics — names, numbers, decisions, and differing viewpoints. Do not compress away detail. A longer meeting should yield a longer, multi-section summary that captures everything discussed.",
@@ -143,8 +284,6 @@ pub fn generate_summary_prompt(transcript: &str, length: &str, style: &str, temp
         "executive" | "action" => "Write tightly and action-first; lead with what matters and outcomes.",
         _ => "Write clearly and neutrally.",
     };
-
-    let structure = template_structure(template);
 
     format!(
         "You are an expert AI meeting assistant. Read the transcript carefully and write a structured, high-quality meeting summary in GitHub-flavored Markdown.

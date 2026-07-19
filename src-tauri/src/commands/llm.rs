@@ -134,7 +134,8 @@ pub async fn summarize_meeting(
     let template = crate::llm::prompt::get_summary_template(&state.db);
 
     // 4. Compile them into a cohesive prompt
-    let prompt = crate::llm::prompt::generate_summary_prompt(&formatted_transcript, &length, &style, &template);
+    let structure = crate::llm::prompt::resolve_template_structure(&state.db, &template);
+    let prompt = crate::llm::prompt::generate_summary_prompt_with_structure(&formatted_transcript, &length, &style, &structure);
 
     // 5. Build/retrieve the chosen LLM engine
     let engine = crate::llm::get_llm_engine(&state.db)?;
@@ -178,7 +179,8 @@ pub async fn summarize_meeting_streaming(
     let style = style.unwrap_or(default_style);
     let template = crate::llm::prompt::get_summary_template(&state.db);
 
-    let prompt = crate::llm::prompt::generate_summary_prompt(&formatted_transcript, &length, &style, &template);
+    let structure = crate::llm::prompt::resolve_template_structure(&state.db, &template);
+    let prompt = crate::llm::prompt::generate_summary_prompt_with_structure(&formatted_transcript, &length, &style, &structure);
 
     // Determine provider: only remote providers support SSE streaming.
     let provider_id = state
@@ -230,7 +232,7 @@ pub async fn summarize_meeting_streaming(
                                 break;
                             }
                         }
-                        let fp = crate::llm::prompt::generate_summary_prompt(&source, &length, &style, &template);
+                        let fp = crate::llm::prompt::generate_summary_prompt_with_structure(&source, &length, &style, &structure);
                         stream_with_backoff(&client, &fp, &app_handle, &meeting_id).await?
                     }
                     Err(e) => return Err(e),
@@ -263,7 +265,55 @@ pub async fn summarize_meeting_streaming(
         json!({ "meeting_id": meeting_id, "summary": summary }),
     );
 
+    // Granola-style auto-title: a short descriptive subtitle generated from
+    // the fresh notes. Stored as a setting (never overwrites the meeting's
+    // own name) and announced to the UI.
+    generate_ai_title(&state, &app_handle, &meeting_id, &summary).await;
+
     Ok(summary)
+}
+
+/// Generate and persist a 4–9 word descriptive title for a meeting from its
+/// summary. Failures are logged, never surfaced — this is a nicety.
+async fn generate_ai_title(
+    state: &State<'_, AppState>,
+    app_handle: &tauri::AppHandle,
+    meeting_id: &str,
+    summary: &str,
+) {
+    // Cap the excerpt on a char boundary.
+    let mut end = summary.len().min(4_000);
+    while end < summary.len() && !summary.is_char_boundary(end) {
+        end += 1;
+    }
+    let prompt = format!(
+        "Write a concise, descriptive title (4-9 words) for this meeting based \
+         on the notes below. Capture the actual subject, not generic phrasing. \
+         Return ONLY the title — no quotes, no trailing punctuation.\n\nNOTES:\n{}",
+        &summary[..end]
+    );
+    let engine = match crate::llm::get_llm_engine(&state.db) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("AI title skipped (no LLM engine): {}", e);
+            return;
+        }
+    };
+    match engine.generate(&prompt).await {
+        Ok(raw) => {
+            let title = raw.trim().trim_matches('"').trim().to_string();
+            // Guard against the model rambling: keep only single-line, sane-length titles.
+            if !title.is_empty() && title.len() <= 120 && !title.contains('\n') {
+                let _ = state.db.set_setting(&format!("ai_title::{}", meeting_id), &title);
+                let _ = app_handle.emit(
+                    "meeting-title-suggested",
+                    json!({ "meeting_id": meeting_id, "title": title }),
+                );
+                info!("AI title for {}: {}", meeting_id, title);
+            }
+        }
+        Err(e) => warn!("AI title generation failed: {}", e),
+    }
 }
 
 #[tauri::command]
@@ -273,4 +323,150 @@ pub async fn regenerate_summary(
 ) -> Result<String, String> {
     info!("Regenerating summary for meeting: {}", meeting_id);
     summarize_meeting(state, meeting_id).await
+}
+
+/// Suggest a concise descriptive title for a meeting (from its notes when
+/// they exist, else the transcript). Returns the suggestion WITHOUT saving —
+/// the frontend applies it via `rename_meeting` so the user stays in control.
+#[tauri::command]
+pub async fn suggest_meeting_title(
+    state: State<'_, AppState>,
+    meeting_id: String,
+) -> Result<String, String> {
+    let summary: Option<String> = state
+        .db
+        .conn()
+        .query_row("SELECT summary FROM meetings WHERE id = ?1", [meeting_id.as_str()], |r| r.get(0))
+        .ok()
+        .flatten();
+
+    let source = match summary {
+        Some(s) if !s.trim().is_empty() => s,
+        _ => {
+            let segments = get_segments(&state.db, &meeting_id)?;
+            if segments.is_empty() {
+                return Err("This meeting has no transcript yet.".to_string());
+            }
+            crate::llm::prompt::format_transcript(&segments)
+        }
+    };
+    let mut end = source.len().min(6_000);
+    while end < source.len() && !source.is_char_boundary(end) {
+        end += 1;
+    }
+    let prompt = format!(
+        "Write a concise, descriptive title (3-8 words) for this meeting. \
+         Capture the actual subject, not generic phrasing. Return ONLY the \
+         title — no quotes, no trailing punctuation.\n\n{}",
+        &source[..end]
+    );
+    let engine = crate::llm::get_llm_engine(&state.db)?;
+    let raw = engine.generate(&prompt).await?;
+    let title = raw.trim().trim_matches('"').trim().to_string();
+    if title.is_empty() || title.len() > 120 || title.contains('\n') {
+        return Err("Could not generate a usable title.".to_string());
+    }
+    Ok(title)
+}
+
+/// Granola-style "Ask anything": answer a free-form question with the same
+/// LLM that generates meeting summaries. With a `meeting_id`, the context is
+/// that meeting's transcript (+ stored summary); without one (home page), the
+/// context is the titles + summaries of the most recent meetings. Emits the
+/// answer via `chat-answer` (with the echoed `request_id`) and also returns it.
+#[tauri::command]
+pub async fn ask_meeting_ai(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    meeting_id: Option<String>,
+    question: String,
+    request_id: String,
+) -> Result<String, String> {
+    let question = question.trim();
+    if question.is_empty() {
+        return Err("Question is empty".to_string());
+    }
+
+    // Keep the context inside a conservative token budget: transcripts are
+    // tail-truncated (the recent discussion answers most questions), and the
+    // home context caps at the 5 newest meetings.
+    const MAX_CONTEXT_CHARS: usize = 24_000;
+
+    let context = match &meeting_id {
+        Some(mid) => {
+            let segments = get_segments(&state.db, mid)?;
+            if segments.is_empty() {
+                return Err("This meeting has no transcript yet.".to_string());
+            }
+            let mut transcript = crate::llm::prompt::format_transcript(&segments);
+            if transcript.len() > MAX_CONTEXT_CHARS {
+                let cut = transcript.len() - MAX_CONTEXT_CHARS;
+                // Truncate on a char boundary.
+                let cut = (cut..transcript.len())
+                    .find(|&i| transcript.is_char_boundary(i))
+                    .unwrap_or(cut);
+                transcript = format!("[…earlier discussion omitted…]\n{}", &transcript[cut..]);
+            }
+            let summary: Option<String> = state
+                .db
+                .conn()
+                .query_row("SELECT summary FROM meetings WHERE id = ?1", [mid.as_str()], |r| r.get(0))
+                .ok()
+                .flatten();
+            match summary {
+                Some(s) if !s.trim().is_empty() => {
+                    format!("MEETING NOTES:\n{}\n\nMEETING TRANSCRIPT:\n{}", s, transcript)
+                }
+                _ => format!("MEETING TRANSCRIPT:\n{}", transcript),
+            }
+        }
+        None => {
+            let conn = state.db.conn();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT title, created_at, summary FROM meetings \
+                     WHERE summary IS NOT NULL AND summary != '' \
+                     ORDER BY created_at DESC LIMIT 5",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            let mut ctx = String::new();
+            for r in rows.flatten() {
+                let (title, created, summary) = r;
+                ctx.push_str(&format!("MEETING \"{}\" ({}):\n{}\n\n", title, created, summary));
+                if ctx.len() > MAX_CONTEXT_CHARS {
+                    break;
+                }
+            }
+            if ctx.is_empty() {
+                return Err("No meeting notes yet — record or import a meeting first.".to_string());
+            }
+            ctx
+        }
+    };
+
+    let prompt = format!(
+        "You are the meeting assistant inside the Voco app. Answer the user's \
+         question using ONLY the meeting context below. Be direct and concise; \
+         use short Markdown (bullets/bold) when it helps. If the context does \
+         not contain the answer, say so plainly.\n\n{}\n\nQUESTION: {}",
+        context, question
+    );
+
+    let engine = crate::llm::get_llm_engine(&state.db)?;
+    let answer = engine.generate(&prompt).await?;
+
+    let _ = app_handle.emit(
+        "chat-answer",
+        json!({ "request_id": request_id, "meeting_id": meeting_id, "answer": answer }),
+    );
+    Ok(answer)
 }
