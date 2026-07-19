@@ -1,0 +1,20 @@
+[package]
+name = "voco-mcp"
+version = "0.4.1"
+edition = "2021"
+description = "Read-only Model Context Protocol sidecar exposing Voco meetings, transcripts, and dictations to coding agents."
+authors = ["Arun Kashyap <kashyaparun25@gmail.com>"]
+license = "MIT"
+
+[[bin]]
+name = "voco-mcp"
+path = "src/main.rs"
+
+# Deliberately minimal: this binary is spawned per-session by MCP clients, so it
+# must launch fast and stay small. No async runtime, no MCP SDK — the stdio
+# transport is newline-delimited JSON-RPC 2.0, hand-served with serde_json.
+# rusqlite/bundled compiles the same SQLite the app uses (build is cached).
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+anyhow = "1"
