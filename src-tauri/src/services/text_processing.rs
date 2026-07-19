@@ -54,7 +54,7 @@ pub fn process(db: &Database, raw: &str) -> String {
         text = apply_vocabulary_boost(db, &text);
     }
 
-    if get_bool(db, "remove_fillers", false) {
+    if get_bool(db, "remove_fillers", true) {
         text = remove_fillers(&text);
     }
     if get_bool(db, "auto_punctuation", true) {

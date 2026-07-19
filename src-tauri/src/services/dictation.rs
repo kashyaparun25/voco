@@ -109,7 +109,7 @@ impl DictationService {
                     #[cfg(feature = "parakeet")]
                     {
                         if model_id.contains("parakeet") {
-                            let dir = crate::stt::ParakeetEngine::model_dir_default(self.model_manager.models_dir());
+                            let dir = crate::stt::ParakeetEngine::model_dir_for(self.model_manager.models_dir(), &model_id);
                             info!("Loading local Parakeet model from: {:?}", dir);
                             let eng = crate::stt::ParakeetEngine::new(&dir)
                                 .map_err(|e| format!("Failed to load Parakeet engine: {:?}", e))?;
@@ -415,8 +415,10 @@ impl DictationService {
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
-                        match tauri::async_runtime::block_on(eng.transcribe(&snapshot)) {
-                            Ok(r) => r.text.trim().to_string(),
+                        // Same preprocessing as the commits and the final tail
+                        // — preview must predict the paste, not diverge from it.
+                        match transcribe_normalized(&eng, &snapshot) {
+                            Ok(t) => t.trim().to_string(),
                             Err(e) => {
                                 log::warn!("Live preview pass failed: {:?}", e);
                                 skip_next = true;
@@ -438,6 +440,36 @@ impl DictationService {
                 info!("Live preview thread finished.");
             });
         }
+
+        // Rolling commit worker: long dictations are transcribed WHILE the
+        // user is still speaking. The audio loop cuts a ~30s chunk at a quiet
+        // point whenever enough uncommitted audio accumulates and sends it
+        // here; on stop only the short tail remains, so stop→paste is
+        // near-instant instead of paying the whole transcription at the end
+        // (the FluidVoice architecture). Serialized on the inference gate
+        // with the preview and the final tail pass.
+        let (commit_tx, commit_rx) = unbounded::<Vec<f32>>();
+        let committed_texts: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let committer_handle = {
+            let engine = engine.clone();
+            let gate = inference_gate.clone();
+            let texts = committed_texts.clone();
+            std::thread::spawn(move || {
+                while let Ok(chunk) = commit_rx.recv() {
+                    let _serialized = gate.lock();
+                    match transcribe_normalized(&engine, &chunk) {
+                        Ok(t) => texts.lock().push(t.trim().to_string()),
+                        Err(e) => {
+                            // Push a placeholder so ordering survives; the
+                            // audio itself is still in the session buffer and
+                            // saved to history, so nothing is lost.
+                            log::warn!("Rolling commit failed (chunk kept in history audio): {:?}", e);
+                            texts.lock().push(String::new());
+                        }
+                    }
+                }
+            })
+        };
 
         // 5. Spawn Audio Processing Loop
         let active_capture_clone = self.active_capture.clone();
@@ -484,6 +516,8 @@ impl DictationService {
             // VAD is annotation-only for dictation: it drives AutoStop and the
             // pill's speech events, but never gates or windows the audio.
             let mut first_speech_mark: Option<usize> = None;
+            // Samples already handed to the rolling-commit worker.
+            let mut committed_end: usize = 0;
 
             // Handle levels in a background channel
             let level_app_handle = app_handle_clone.clone();
@@ -527,6 +561,22 @@ impl DictationService {
                     if live_preview {
                         preview_buf_thread.lock().extend_from_slice(&samples);
                     }
+                }
+
+                // Rolling commit: enough uncommitted audio → cut at the
+                // quietest point near 30s and hand it to the committer.
+                const COMMIT_TRIGGER: usize = 32 * 16_000;
+                const COMMIT_TARGET: usize = 30 * 16_000;
+                if session_buffer.len() - committed_end >= COMMIT_TRIGGER {
+                    let cut = chunk_cut_point(&session_buffer[committed_end..], COMMIT_TARGET);
+                    let chunk = session_buffer[committed_end..committed_end + cut].to_vec();
+                    committed_end += cut;
+                    info!(
+                        "Dictation: rolling commit of {:.1}s (committed through {:.1}s).",
+                        chunk.len() as f64 / 16_000.0,
+                        committed_end as f64 / 16_000.0
+                    );
+                    let _ = commit_tx.send(chunk);
                 }
 
                 if let Some(speech_started) = vad_change {
@@ -619,34 +669,45 @@ impl DictationService {
             }
 
             if should_transcribe && !speech_buffer.is_empty() {
-                // Pad sub-1s clips with trailing silence: whisper.cpp asserts on
-                // buffers shorter than 1s (FluidVoice pads for the same reason),
-                // and short bursts like "yes" would otherwise be at risk.
-                const MIN_STT_SAMPLES: usize = 16000;
-                if speech_buffer.len() < MIN_STT_SAMPLES {
-                    speech_buffer.resize(MIN_STT_SAMPLES, 0.0);
+                info!(
+                    "Transcribing tail: {} of {} samples ({} already committed)...",
+                    speech_buffer.len().saturating_sub(committed_end),
+                    speech_buffer.len(),
+                    committed_end
+                );
+                // Shut the committer down and wait for queued chunks BEFORE
+                // taking the inference gate ourselves — the committer needs
+                // the gate, so taking it first would deadlock the join.
+                drop(commit_tx);
+                if let Err(e) = committer_handle.join() {
+                    error!("Rolling-commit worker panicked: {:?}", e);
                 }
-                // Normalize quiet audio before STT: consumer mic levels often sit
-                // far below full scale (low OS input volume, distance) and both
-                // Whisper and Audio8 degrade or hallucinate on near-silent input.
-                // Gain is capped so noise-only audio isn't amplified into speech.
-                let peak = speech_buffer.iter().fold(0f32, |m, &s| m.max(s.abs()));
-                if peak > 0.0 && peak < 0.5 {
-                    let gain = (0.9 / peak).min(20.0);
-                    for s in speech_buffer.iter_mut() {
-                        *s *= gain;
+                // Only the tail is left to transcribe — the rolling commits
+                // handled everything before committed_end while the user was
+                // still speaking, which is what makes stop→paste fast.
+                // Preprocessing (pad + normalize) is identical across
+                // preview/commits/tail via transcribe_normalized.
+                let transcription_res = (|| {
+                    let _inference_serialized = inference_gate_thread.lock();
+                    let t0 = std::time::Instant::now();
+                    let tail_start = committed_end.min(speech_buffer.len());
+                    let tail = transcribe_long(&engine, &speech_buffer[tail_start..])?;
+                    let mut parts: Vec<String> = committed_texts
+                        .lock()
+                        .iter()
+                        .filter(|p| !p.trim().is_empty())
+                        .cloned()
+                        .collect();
+                    if !tail.text.trim().is_empty() {
+                        parts.push(tail.text.trim().to_string());
                     }
-                    info!("Dictation: normalized audio {:.1}x (peak was {:.3}).", gain, peak);
-                }
-                info!("Transcribing {} speech samples...", speech_buffer.len());
-                // Serialize with the live preview: wait for any in-flight
-                // preview pass to finish before running the final one.
-                let _inference_serialized = inference_gate_thread.lock();
-                // Long dictations are transcribed in bounded chunks — encoder
-                // self-attention memory is quadratic in input length, and a
-                // single multi-minute pass can balloon to tens of GB (same
-                // failure class as the meeting-pipeline 43 GB spike).
-                let transcription_res = transcribe_long(&engine, &speech_buffer);
+                    Ok::<_, anyhow::Error>(crate::stt::TranscriptionResult {
+                        text: parts.join(" "),
+                        segments: Vec::new(),
+                        language: None,
+                        processing_time_ms: t0.elapsed().as_millis() as u64,
+                    })
+                })();
 
                 // Persist the raw clip (when saving is enabled) + a history row.
                 // Shared by the success and failure paths so a recording is never
@@ -845,36 +906,56 @@ impl DictationService {
 /// grows quadratically with input length, so anything beyond ~30 s is split
 /// into chunks — cut at the quietest 200 ms window near each boundary so words
 /// aren't sliced mid-syllable — transcribed sequentially, and joined.
+/// Pad + peak-normalize + transcribe one bounded piece of audio. ONE shared
+/// preprocessing path for the live preview, the rolling commits, and the
+/// final tail — if they diverge, the pasted text stops matching what the
+/// pill showed (that bug shipped once).
+fn transcribe_normalized(
+    engine: &std::sync::Arc<dyn SttEngine>,
+    audio: &[f32],
+) -> anyhow::Result<String> {
+    // whisper.cpp asserts on sub-1s buffers; short bursts get padded.
+    const MIN_STT_SAMPLES: usize = 16_000;
+    let mut buf = audio.to_vec();
+    if buf.len() < MIN_STT_SAMPLES {
+        buf.resize(MIN_STT_SAMPLES, 0.0);
+    }
+    // Consumer mic levels often sit far below full scale; quiet input degrades
+    // every engine. Gain is capped so noise-only audio isn't amplified.
+    let peak = buf.iter().fold(0f32, |m, &s| m.max(s.abs()));
+    if peak > 0.0 && peak < 0.5 {
+        let gain = (0.9 / peak).min(20.0);
+        for s in buf.iter_mut() {
+            *s *= gain;
+        }
+    }
+    Ok(tauri::async_runtime::block_on(engine.transcribe(&buf))?.text)
+}
+
 fn transcribe_long(
     engine: &std::sync::Arc<dyn SttEngine>,
     audio: &[f32],
 ) -> anyhow::Result<crate::stt::TranscriptionResult> {
-    // 90s: high enough that typical dictations are a SINGLE pass (chunk
-    // boundaries can clip words), low enough that encoder attention stays
-    // bounded (~1 GB transient at 90 s vs the multi-GB blowups beyond ~5 min).
-    const MAX_CHUNK: usize = 90 * 16_000;
+    // 30s chunks, cut at quiet points — the same scale the live preview uses.
+    // Parakeet's accuracy audibly degrades on single passes much longer than
+    // its ~30s training window (verified side-by-side: a 67.5s single pass
+    // mangled words the 30s preview had gotten right), and encoder attention
+    // memory grows quadratically on top.
+    const MAX_CHUNK: usize = 30 * 16_000;
 
-    if audio.len() <= MAX_CHUNK {
-        return tauri::async_runtime::block_on(engine.transcribe(audio));
-    }
-
-    info!(
-        "Long dictation ({:.1}s): transcribing in ~30s chunks.",
-        audio.len() as f64 / 16_000.0
-    );
     let t0 = std::time::Instant::now();
     let mut text = String::new();
     let mut pos = 0usize;
     while pos < audio.len() {
         let remaining = &audio[pos..];
         let end = chunk_cut_point(remaining, MAX_CHUNK);
-        let piece = tauri::async_runtime::block_on(engine.transcribe(&remaining[..end]))?;
-        let piece = piece.text.trim().to_string();
+        let piece = transcribe_normalized(engine, &remaining[..end])?;
+        let piece = piece.trim();
         if !piece.is_empty() {
             if !text.is_empty() {
                 text.push(' ');
             }
-            text.push_str(&piece);
+            text.push_str(piece);
         }
         pos += end;
     }

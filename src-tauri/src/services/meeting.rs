@@ -193,7 +193,7 @@ impl MeetingService {
                         #[cfg(feature = "parakeet")]
                         {
                             if model_id.contains("parakeet") {
-                                let dir = crate::stt::ParakeetEngine::model_dir_default(self.model_manager.models_dir());
+                                let dir = crate::stt::ParakeetEngine::model_dir_for(self.model_manager.models_dir(), &model_id);
                                 info!("Loading local Parakeet model from: {:?}", dir);
                                 let eng = crate::stt::ParakeetEngine::new(&dir)
                                     .map_err(|e| format!("Failed to load Parakeet engine: {:?}", e))?;
@@ -1249,7 +1249,7 @@ fn load_stt_engine_from_settings(
         }
         #[cfg(feature = "parakeet")]
         if model_id.contains("parakeet") {
-            let dir = crate::stt::ParakeetEngine::model_dir_default(model_manager.models_dir());
+            let dir = crate::stt::ParakeetEngine::model_dir_for(model_manager.models_dir(), &model_id);
             let eng = crate::stt::ParakeetEngine::new(&dir)
                 .map_err(|e| format!("Failed to load Parakeet engine: {:?}", e))?;
             return Ok(Arc::new(eng));

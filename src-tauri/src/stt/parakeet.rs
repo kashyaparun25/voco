@@ -163,6 +163,18 @@ impl ParakeetEngine {
         models_dir.join("parakeet-tdt-0.6b")
     }
 
+    /// Resolve the model directory for a specific Parakeet variant id
+    /// ("parakeet-tdt-v3" → int8 bundle dir, "parakeet-tdt-v3-fp32" → the
+    /// full-precision bundle). Both directories use the same file names, so
+    /// the engine loads either without further changes.
+    pub fn model_dir_for(models_dir: &Path, model_id: &str) -> PathBuf {
+        if model_id.contains("fp32") {
+            models_dir.join("parakeet-tdt-0.6b-fp32")
+        } else {
+            Self::model_dir_default(models_dir)
+        }
+    }
+
     /// Load encoder/decoder/joiner sessions and the vocabulary from
     /// `model_dir`.
     ///
@@ -1021,24 +1033,43 @@ fn first_existing(dir: &Path, candidates: &[&str]) -> Option<PathBuf> {
 fn build_session(path: &Path) -> Result<Session> {
     use ort::execution_providers::CoreMLExecutionProvider;
 
-    // Try CoreML first; if EP registration fails, fall back to a plain session.
-    let builder = Session::builder().context("creating ort session builder")?;
-    match builder.with_execution_providers([CoreMLExecutionProvider::default().build()]) {
-        Ok(b) => {
-            let mut b = b;
-            b.commit_from_file(path)
-                .with_context(|| format!("committing session (CoreML) from {}", path.display()))
+    // ORT's CoreML EP cannot load models with EXTERNAL weight data
+    // ("model_path must not be empty" during initializer resolution) — the
+    // fp32 encoder ships its 2.3 GB of weights in a sibling .onnx.data file
+    // precisely because it exceeds the 2 GB protobuf limit. Don't waste a
+    // doomed compile attempt: go straight to CPU for those models.
+    let has_external_data = path
+        .to_str()
+        .map(|p| Path::new(&format!("{p}.data")).exists())
+        .unwrap_or(false);
+
+    if !has_external_data {
+        let builder = Session::builder().context("creating ort session builder")?;
+        if let Ok(mut b) =
+            builder.with_execution_providers([CoreMLExecutionProvider::default().build()])
+        {
+            match b.commit_from_file(path) {
+                Ok(s) => return Ok(s),
+                // A commit failure (not just registration failure) must also
+                // fall back — CoreML rejects some graphs only at compile time.
+                Err(e) => warn!(
+                    "CoreML session commit failed for {} ({e}); falling back to CPU",
+                    path.display()
+                ),
+            }
+        } else {
+            warn!("CoreML EP unavailable for {}; falling back to CPU", path.display());
         }
-        Err(e) => {
-            warn!(
-                "CoreML EP unavailable for {} ({e}); falling back to CPU",
-                path.display()
-            );
-            let mut b = Session::builder().context("creating fallback ort session builder")?;
-            b.commit_from_file(path)
-                .with_context(|| format!("committing session (CPU) from {}", path.display()))
-        }
+    } else {
+        info!(
+            "{} uses external weight data; using the CPU provider (CoreML can't load it).",
+            path.display()
+        );
     }
+
+    let mut b = Session::builder().context("creating fallback ort session builder")?;
+    b.commit_from_file(path)
+        .with_context(|| format!("committing session (CPU) from {}", path.display()))
 }
 
 // ---------------------------------------------------------------------------

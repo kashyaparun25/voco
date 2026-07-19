@@ -145,6 +145,35 @@ const SUPPORTED_BUNDLES: &[BundleModel] = &[BundleModel {
         },
     ],
 }, BundleModel {
+    // Parakeet TDT v3 at FULL precision (fp32). Same architecture as the
+    // int8 bundle above but ~2.3 GB and noticeably better on single-phoneme
+    // distinctions ("correct" vs "connect") and accented speech — the int8
+    // quantization is where those misses come from. Costs ~2.5 GB RAM while
+    // the dictation engine is cached.
+    id: "parakeet-tdt-v3-fp32",
+    name: "Parakeet TDT 0.6B v3 — high accuracy (fp32 ONNX)",
+    subdir: "parakeet-tdt-0.6b-fp32",
+    category: "stt",
+    size_bytes: 2_450_000_000,
+    files: &[
+        BundleFile {
+            url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx",
+            dest: "encoder-model.onnx",
+        },
+        BundleFile {
+            url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx.data",
+            dest: "encoder-model.onnx.data",
+        },
+        BundleFile {
+            url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/decoder_joint-model.onnx",
+            dest: "decoder_joint-model.onnx",
+        },
+        BundleFile {
+            url: "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/vocab.txt",
+            dest: "vocab.txt",
+        },
+    ],
+}, BundleModel {
     // Audio8-ASR 0.1B (arkasr speech-LLM), int8 ONNX. Native embedded engine —
     // downloads the int8 subset (~0.9GB) on demand; layout mirrors model_bundle/
     // so Audio8Engine::new can read graphs+json at root and weights/ underneath.

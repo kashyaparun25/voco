@@ -71,7 +71,7 @@ export default function DictationSettings() {
   const [pauseMedia, setPauseMedia] = useState<boolean>(false);
   const [aiEnhance, setAiEnhance] = useState<boolean>(false);
   const [aiPrompt, setAiPrompt] = useState<string>("");
-  const [removeFillers, setRemoveFillers] = useState<boolean>(false);
+  const [removeFillers, setRemoveFillers] = useState<boolean>(true);
   const [soundFeedback, setSoundFeedback] = useState<boolean>(false);
   const [appProfiles, setAppProfiles] = useState<boolean>(true);
 
