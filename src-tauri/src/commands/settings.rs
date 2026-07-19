@@ -137,3 +137,43 @@ pub fn request_microphone_permission() -> Result<(), String> {
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
+
+/// Path of the app's log file (`~/Library/Logs/Voco.log`, written by the
+/// env_logger pipe set up in lib.rs::init_logging).
+fn app_log_path() -> Result<std::path::PathBuf, String> {
+    std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("Library/Logs/Voco.log"))
+        .map_err(|e| format!("HOME not set: {e}"))
+}
+
+/// Tail of the app log for the in-app viewer. `lines` defaults to 500,
+/// capped at 5000 so a huge log can't flood the webview.
+#[tauri::command]
+pub fn read_app_logs(lines: Option<usize>) -> Result<String, String> {
+    let n = lines.unwrap_or(500).min(5_000);
+    let path = app_log_path()?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    let all: Vec<&str> = content.lines().collect();
+    let start = all.len().saturating_sub(n);
+    Ok(all[start..].join("\n"))
+}
+
+/// Reveal the log file in Finder.
+#[tauri::command]
+pub fn reveal_app_logs() -> Result<(), String> {
+    let path = app_log_path()?;
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Truncate the log file (fresh capture before reproducing an issue).
+#[tauri::command]
+pub fn clear_app_logs() -> Result<(), String> {
+    let path = app_log_path()?;
+    std::fs::write(&path, "").map_err(|e| format!("Cannot clear {}: {e}", path.display()))
+}

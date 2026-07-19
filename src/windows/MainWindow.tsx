@@ -28,6 +28,7 @@ import DictationSettings from "../components/settings/DictationSettings";
 import MeetingSettings from "../components/settings/MeetingSettings";
 import RecordingSettings from "../components/settings/RecordingSettings";
 import HotkeySettings from "../components/settings/HotkeySettings";
+import LogsViewer from "../components/settings/LogsViewer";
 import CustomDictionary from "../components/settings/CustomDictionary";
 import StatsPage from "../components/stats/StatsPage";
 import StatsPill from "../components/stats/StatsPill";
@@ -176,7 +177,7 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [selectedHasRecording, setSelectedHasRecording] = useState(false);
   const [settingsSection, setSettingsSection] = useState<
-    "appearance" | "general" | "dictation" | "meetings" | "recordings" | "hotkeys" | "ai"
+    "appearance" | "general" | "dictation" | "meetings" | "recordings" | "hotkeys" | "ai" | "logs"
   >("appearance");
   const [segments, setSegments] = useState<any[]>([]);
   const [meetingRecording, setMeetingRecording] = useState(false);
@@ -828,6 +829,7 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
     { id: "recordings", label: "Recordings" },
     { id: "hotkeys", label: "Hotkeys" },
     { id: "ai", label: "AI Providers & Models" },
+    { id: "logs", label: "Logs" },
   ] as const;
 
   const renderSettingsSection = () => {
@@ -857,6 +859,8 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
             <ModelSelector />
           </VStack>
         );
+      case "logs":
+        return <LogsViewer />;
     }
   };
 
