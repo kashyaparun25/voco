@@ -329,6 +329,10 @@ pub fn run() {
             commands::stats::reset_dictation_stats,
             commands::window::show_pill_window,
             commands::window::hide_pill_window,
+            commands::mcp::mcp_get_status,
+            commands::mcp::mcp_set_enabled,
+            commands::mcp::mcp_get_setup,
+            commands::mcp::mcp_test_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

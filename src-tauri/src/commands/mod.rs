@@ -3,6 +3,7 @@ pub mod dictation;
 pub mod export;
 pub mod gcal;
 pub mod llm;
+pub mod mcp;
 pub mod meeting;
 pub mod models;
 pub mod providers;

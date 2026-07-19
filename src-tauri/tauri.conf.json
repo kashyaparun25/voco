@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm build && bash scripts/build-sidecar.sh",
     "frontendDist": "../dist"
   },
   "app": {
@@ -41,7 +41,10 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/**", "$APPDATA/recordings/*"]
+        "scope": [
+          "$APPDATA/**",
+          "$APPDATA/recordings/*"
+        ]
       }
     }
   },
@@ -63,6 +66,9 @@
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "Voco Dev"
-    }
+    },
+    "externalBin": [
+      "binaries/voco-mcp"
+    ]
   }
 }
