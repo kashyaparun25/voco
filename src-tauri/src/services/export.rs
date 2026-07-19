@@ -94,6 +94,11 @@ pub fn to_txt(meta: &MeetingMeta, segments: &[Segment]) -> String {
     out
 }
 
+/// Formats seconds into a WebVTT timestamp `HH:MM:SS.mmm` (dot separator, per spec).
+fn format_vtt_timestamp(seconds: f64) -> String {
+    format_srt_timestamp(seconds).replace(',', ".")
+}
+
 /// SRT subtitle export.
 pub fn to_srt(segments: &[Segment]) -> String {
     let mut out = String::new();
@@ -103,6 +108,21 @@ pub fn to_srt(segments: &[Segment]) -> String {
             "{} --> {}\n",
             format_srt_timestamp(seg.start_time),
             format_srt_timestamp(seg.end_time)
+        ));
+        out.push_str(&format!("{}: {}\n\n", speaker_label(seg), seg.text));
+    }
+    out
+}
+
+/// WebVTT subtitle export.
+pub fn to_vtt(segments: &[Segment]) -> String {
+    let mut out = String::from("WEBVTT\n\n");
+    for (i, seg) in segments.iter().enumerate() {
+        out.push_str(&format!("{}\n", i + 1));
+        out.push_str(&format!(
+            "{} --> {}\n",
+            format_vtt_timestamp(seg.start_time),
+            format_vtt_timestamp(seg.end_time)
         ));
         out.push_str(&format!("{}: {}\n\n", speaker_label(seg), seg.text));
     }
@@ -157,7 +177,7 @@ pub fn to_markdown(meta: &MeetingMeta, segments: &[Segment]) -> String {
 }
 
 /// Renders a meeting to the requested format string.
-/// Supported formats: "txt", "srt", "json", "md"/"markdown".
+/// Supported formats: "txt", "srt", "vtt", "json", "md"/"markdown".
 pub fn export_meeting(db: &Database, meeting_id: &str, format: &str) -> Result<String, String> {
     if meeting_id.trim().is_empty() {
         return Err("Meeting id cannot be empty".to_string());
@@ -169,6 +189,7 @@ pub fn export_meeting(db: &Database, meeting_id: &str, format: &str) -> Result<S
     match format.to_lowercase().as_str() {
         "txt" | "text" => Ok(to_txt(&meta, &segments)),
         "srt" => Ok(to_srt(&segments)),
+        "vtt" => Ok(to_vtt(&segments)),
         "json" => to_json(&meta, &segments),
         "md" | "markdown" => Ok(to_markdown(&meta, &segments)),
         other => Err(format!("Unsupported export format: {}", other)),
@@ -222,6 +243,25 @@ mod tests {
         assert!(out.contains("2\n00:00:02,000 --> 00:00:04,500"));
         assert!(out.contains("Alex: Hello"));
         assert!(out.contains("Jordan: Hi there"));
+    }
+
+    #[test]
+    fn vtt_timestamp_uses_dot_separator() {
+        assert_eq!(format_vtt_timestamp(0.0), "00:00:00.000");
+        assert_eq!(format_vtt_timestamp(65.25), "00:01:05.250");
+        assert_eq!(format_vtt_timestamp(3661.007), "01:01:01.007");
+    }
+
+    #[test]
+    fn vtt_has_header_and_cues() {
+        let segs = vec![
+            seg(Some("Alex"), 0.0, 2.0, "Hello"),
+            seg(Some("Jordan"), 2.0, 4.5, "Hi there"),
+        ];
+        let out = to_vtt(&segs);
+        assert!(out.starts_with("WEBVTT\n\n"));
+        assert!(out.contains("1\n00:00:00.000 --> 00:00:02.000\nAlex: Hello\n"));
+        assert!(out.contains("2\n00:00:02.000 --> 00:00:04.500\nJordan: Hi there\n"));
     }
 
     #[test]

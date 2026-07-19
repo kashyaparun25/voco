@@ -140,7 +140,7 @@ export default function FileTranscriptionPage() {
     return () => { if (unTs) unTs(); if (unDiar) unDiar(); if (unDrop) unDrop(); };
   }, [selectedId, fetchTranscript, fetchImports, startImport]);
 
-  const handleExport = async (format: "txt" | "srt" | "json" | "markdown") => {
+  const handleExport = async (format: "txt" | "srt" | "vtt" | "json" | "markdown") => {
     if (!selectedId) return;
     try {
       const content = await invoke<string>("export_meeting", { meetingId: selectedId, format });
@@ -258,12 +258,13 @@ export default function FileTranscriptionPage() {
   );
 }
 
-function ExportMenu({ onExport }: { onExport: (format: "txt" | "srt" | "json" | "markdown") => void }) {
+function ExportMenu({ onExport }: { onExport: (format: "txt" | "srt" | "vtt" | "json" | "markdown") => void }) {
   const [open, setOpen] = useState(false);
-  const formats: Array<{ id: "markdown" | "txt" | "srt" | "json"; label: string }> = [
+  const formats: Array<{ id: "markdown" | "txt" | "srt" | "vtt" | "json"; label: string }> = [
     { id: "markdown", label: "Markdown (.md)" },
     { id: "txt", label: "Plain Text (.txt)" },
     { id: "srt", label: "Subtitles (.srt)" },
+    { id: "vtt", label: "WebVTT (.vtt)" },
     { id: "json", label: "JSON (.json)" },
   ];
   return (

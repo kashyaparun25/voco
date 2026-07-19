@@ -541,7 +541,7 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
 
   // Export the full transcript (TXT / SRT / JSON / Markdown) via the backend
   // export engine, then save through the dialog + fs plugins.
-  const handleExportMeeting = async (format: "txt" | "srt" | "json" | "markdown") => {
+  const handleExportMeeting = async (format: "txt" | "srt" | "vtt" | "json" | "markdown") => {
     if (!selectedMeetingId) return;
     try {
       const ext = format === "markdown" ? "md" : format;
@@ -1179,12 +1179,13 @@ function MeetingTab({ label, active, onClick }: { label: string; active: boolean
 }
 
 // Small transcript-export dropdown shown for saved meetings.
-function ExportMenu({ onExport }: { onExport: (format: "txt" | "srt" | "json" | "markdown") => void }) {
+function ExportMenu({ onExport }: { onExport: (format: "txt" | "srt" | "vtt" | "json" | "markdown") => void }) {
   const [open, setOpen] = useState(false);
-  const formats: Array<{ id: "markdown" | "txt" | "srt" | "json"; label: string }> = [
+  const formats: Array<{ id: "markdown" | "txt" | "srt" | "vtt" | "json"; label: string }> = [
     { id: "markdown", label: "Markdown (.md)" },
     { id: "txt", label: "Plain Text (.txt)" },
     { id: "srt", label: "Subtitles (.srt)" },
+    { id: "vtt", label: "WebVTT (.vtt)" },
     { id: "json", label: "JSON (.json)" }
   ];
   return (
