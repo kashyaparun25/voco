@@ -1,6 +1,6 @@
 [package]
 name = "voco"
-version = "0.3.0"
+version = "0.4.0"
 description = "Private, on-device voice dictation & meeting notes for macOS."
 authors = ["Arun Kashyap <kashyaparun25@gmail.com>"]
 license = "MIT"

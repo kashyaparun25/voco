@@ -19,9 +19,9 @@ Talk anywhere and get instant text at your cursor; record meetings and get diari
 ## What it does
 
 - **Dictation** — press a hotkey (default **Left Option ⌥**), speak, and the transcribed text is pasted at your cursor in any app. Near‑instant start (the mic is kept "warm"), with app‑aware AI cleanup (punctuation, capitalization, custom dictionary, per‑app prompts).
-- **Meetings** — records both your microphone and system audio (the other participants), transcribes live, separates speakers (neural diarization), and generates a structured AI summary.
+- **Meetings** — records both your microphone and system audio (the other participants), transcribes, separates speakers, and writes structured AI notes. Transcription + diarization run in a single local model (MOSS‑Transcribe‑Diarize) as the finalize pass; a Granola‑style home shows your Google Calendar events, and each meeting gets a note‑first page with an ask‑anything AI bar.
 - **Import & re‑process** — drop in an audio file (mp3/m4a/wav/flac) to transcribe it, or re‑run transcription on any saved recording.
-- **Local‑first** — embedded speech‑to‑text (Whisper, Parakeet, Audio8‑ASR) and optional embedded LLM summaries run entirely on your Mac. Cloud providers (OpenAI, Groq, NVIDIA, Ollama, LM Studio) are optional.
+- **Local‑first** — embedded speech‑to‑text (Whisper, Parakeet, Audio8‑ASR, MOSS‑Transcribe‑Diarize) and optional embedded LLM summaries run entirely on your Mac. Cloud providers (OpenAI, Groq, NVIDIA, Ollama, LM Studio) are optional.
 
 ## Install
 
@@ -50,15 +50,20 @@ Download the latest `Voco_x.y.z_aarch64.dmg` from the [Releases page](https://gi
 - **Right‑click** `Voco.app` → **Open** → **Open**, or
 - run `xattr -cr /Applications/Voco.app` in Terminal.
 
-On first launch, grant the permissions Voco requests (Microphone, Screen Recording, Accessibility, Input Monitoring) — the in‑app **Getting Started** page walks you through them.
+On first launch, an onboarding wizard walks you through the permissions Voco needs (Microphone, Screen Recording, Accessibility, Input Monitoring), the model downloads (dictation + meeting intelligence), and AI‑notes setup (local LLM or a cloud provider).
 
 ## Highlights
 
 - **Instant, clip‑free capture** — a pre‑armed ("warm") microphone means the first word is never cut off, with **no persistent orange mic indicator** (the mic only turns on while you dictate).
+- **Live transcript in the pill** — the text appears in the dictation pill as you speak (a rolling Parakeet preview); the final pass replaces it before pasting.
+- **Clipboard‑free text insertion** — dictated text is typed via unicode keyboard events targeted at the app that had focus when you started, so your clipboard stays untouched and it works reliably in Electron apps and terminals. Clipboard+⌘V and AppleScript remain as fallbacks, with a guarded clipboard restore.
+- **Vocabulary boosting** — near‑miss transcriptions snap to your custom‑dictionary terms via guarded fuzzy matching, whatever engine you use.
 - **Never lose a recording** — meeting audio is streamed to disk crash‑safely; if the app is force‑quit or crashes mid‑meeting, the recording is recovered on next launch and can be re‑transcribed. Failed dictations keep their audio too.
 - **Smart media handling** — playing media (Apple Music, Spotify, browser video) is paused while you dictate and resumed after — and *only* if Voco was the one that paused it (works on macOS 15.4+/26 via an entitled MediaRemote bridge).
-- **Structured summaries** — Google‑Meet / Granola / Meetily‑style templates (General, Standup, 1:1, Sales, Interview, Retrospective, Decision Log) with proper Markdown tables (action items with owner/due, decisions, topic‑by‑topic notes). Short / medium / detailed length. Long meetings are summarized via adaptive map‑reduce so they never exceed a provider's token limits.
-- **Speaker diarization** — neural pyannote‑based separation, on by default.
+- **Note‑first meetings** — a Granola‑style "Coming up" home with your Google Calendar events (the live recording pinned on top), meeting pages where the AI notes *are* the page, the transcript in a bottom sheet with speaker chat bubbles and search, and a "My notes ↔ Enhanced" toggle for per‑meeting personal notes. Titles and AI notes are editable (with overwrite protection); descriptive subtitles are generated automatically.
+- **Ask‑anything AI bar** — on the meetings home and each note page, ask questions about a meeting (or your recent meetings) using the same LLM that writes the notes, with recipe chips for action items, key decisions, and a follow‑up email draft.
+- **Structured notes, 23 templates** — Google‑Meet / Granola / Meetily‑style templates (stand‑up, 1:1, customer discovery, sales, hiring, retrospective, board meeting, lecture, decision log, and more) with proper Markdown tables (action items with owner/due, decisions, topic‑by‑topic notes), plus a searchable template gallery, favorites, and editable custom templates. Short / medium / detailed length. Long meetings are summarized via adaptive map‑reduce so they never exceed a provider's token limits.
+- **Speaker diarization** — transcription and diarization run jointly in one local model (MOSS‑Transcribe‑Diarize, English + Chinese) as the finalize pass after every meeting and import; pyannote relabeling remains the fallback and covers other languages. Click the speakers chip to rename speakers — with attendee‑name suggestions from the matching calendar event — and the notes regenerate with real names.
 - **Your keys, your models** — per‑task provider/model selection; one connection can serve STT for dictation and an LLM for summaries without collision.
 
 ## Screenshots
@@ -120,9 +125,10 @@ The default build already includes on‑device diarization + the ONNX STT stack.
 
 | Feature | What it enables |
 | --- | --- |
-| `neural-diarization` | pyannote speaker separation (default) |
+| `neural-diarization` | pyannote speaker separation — fallback diarizer (default) |
 | `parakeet` | Parakeet TDT 0.6B ONNX STT (default) |
 | `audio8` | Audio8‑ASR 0.1B native ONNX STT (default) |
+| `moss` | MOSS‑Transcribe‑Diarize 0.9B joint STT+diarization finalize pass (default) |
 | `embedded-llm` | Local GGUF LLM summaries via llama.cpp |
 | `macos-native` | ScreenCaptureKit system audio + CGEvent paste |
 
@@ -133,6 +139,7 @@ Voco supports several STT engines, selectable per task (Dictation / Meetings) in
 - **Whisper** (embedded, GGUF via whisper.cpp) — download tiny→large‑v3 from the model list. Metal‑accelerated. Defaults to **English** (configurable).
 - **Parakeet TDT 0.6B** (embedded, ONNX) — fast multilingual, downloaded on demand.
 - **Audio8‑ASR 0.1B** (embedded, ONNX) — a tiny multilingual speech‑LLM (7 languages incl. Cantonese). Fully native — downloads ~0.9 GB on demand, no Python/server. Auto‑detects language.
+- **MOSS‑Transcribe‑Diarize 0.9B** (embedded, GGUF via transcribe.cpp) — joint transcription + speaker diarization in one model, Metal‑accelerated. **English and Chinese only** (other languages use pyannote relabeling instead). ~987 MB download. Used as the finalize pass after meetings/imports; picking it as the meeting model means record‑then‑transcribe (no live captions, full diarized transcript on stop).
 - **Cloud** — OpenAI Whisper, Groq, NVIDIA NIM, Ollama, LM Studio (OpenAI‑compatible). Bring your own key.
 
 ### Transcription language

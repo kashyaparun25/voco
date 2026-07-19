@@ -2,6 +2,72 @@
 
 All notable changes to Voco. Dates are the day work landed.
 
+## [0.4.0] — 2026-07-19
+
+A meetings release: one local model that transcribes and diarizes together, a
+Granola-style redesign of the whole meetings surface, and dictation that types
+text instead of pasting it.
+
+### Meetings
+- **MOSS-Transcribe-Diarize 0.9B** — joint transcription + speaker diarization
+  in one local model (GGUF via transcribe.cpp, Metal). Runs as the finalize
+  pass after every meeting/import, replacing pyannote relabeling as the
+  default (pyannote remains the fallback and covers languages other than
+  English/Chinese). Selecting it as the meeting model means
+  record-then-transcribe: no live captions, full diarized transcript on stop.
+  English + Chinese; ~987 MB download.
+- **Granola-style redesign** — "Coming up" home with Google Calendar events
+  and the live recording pinned on top; note-first meeting pages (big serif
+  title, AI notes as the page); transcript as a bottom sheet with speaker
+  chat bubbles, search, and copy; "My notes ↔ Enhanced" toggle with
+  per-meeting personal notes.
+- **23 built-in note templates** (stand-up, 1:1, sales, board meeting,
+  lecture, …) plus a searchable template gallery, favorites, and editable
+  user-created templates.
+- **Ask-anything AI bar** on the meetings home and each note page — ask about
+  a meeting (or your recent meetings) using the summary LLM, with recipe
+  chips for action items, key decisions, and a follow-up email draft.
+- **Speaker mapping** — click the speakers chip to rename diarized speakers,
+  with attendee-name suggestions from the matching Calendar event; notes
+  regenerate with the real names.
+- Editable meeting titles (calendar-event + AI suggestions), editable AI
+  notes with overwrite protection, auto-generated subtitles after notes
+  generation.
+- **WebVTT export** joins TXT/SRT/JSON/Markdown. Imported audio now appears
+  on the Meetings home as well as File Transcription.
+
+### Dictation
+- **Live transcript in the pill** while you speak — Parakeet re-transcribes a
+  rolling window; the final pass replaces it.
+- **Clipboard-free insertion** — text is typed via unicode keyboard events
+  targeted at the app that had focus when dictation started (PID-targeted
+  CGEvents). Fixes intermittent pastes and works in Electron apps and
+  terminals; clipboard+⌘V and AppleScript remain as fallbacks with a
+  change-count-guarded clipboard restore.
+- **Whole-session transcription** — the VAD no longer trims audio (it only
+  drives AutoStop and pill events), so quiet trailing words survive; long
+  dictations are chunked at quiet points past 90 s.
+- **Vocabulary boosting** — near-miss transcriptions snap to custom-dictionary
+  terms via guarded fuzzy matching, with every engine.
+
+### Reliability
+- Fixed unbounded-memory failures in both the meeting and dictation pipelines
+  (encoder self-attention is quadratic in input length; 43 GB / 37 GB spikes
+  observed before the fix). All STT call sites now feed bounded audio.
+- Lock-free SPSC ring for mic capture; host-time session trimming (no stale
+  audio across sessions); system-audio channel fully drained and bounded; STT
+  moved off the audio threads.
+- Speaker rename no longer detaches segments (INSERT OR REPLACE cascade bug).
+
+### Design
+- New logo: a single-stroke mark — a voice waveform that dips into a V and
+  coils into a spiral O — in a graphite-mist palette; full macOS icon set
+  regenerated.
+- Manrope as the app-wide typeface (bundled, offline); serif stays on the
+  large meeting titles.
+- First-run onboarding wizard: permissions, model downloads (dictation +
+  meeting intelligence), and AI-notes setup (local LLM or a cloud provider).
+
 ## [0.3.0] — 2026-07-14
 
 A dictation-reliability release: transcription that works at any mic level, a
