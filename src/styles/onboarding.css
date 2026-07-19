@@ -1,0 +1,247 @@
+/* onboarding.css — first-run setup wizard.
+ *
+ * Granola-calm: one step at a time, centered 560px column, serif display
+ * headings, generous whitespace. Driven entirely by the theme --color-*
+ * variables so every theme (dark & light) works.
+ *
+ * Unlayered on purpose (the meetings.css lesson): layered rules lose to any
+ * unlayered/global CSS. Box-critical overlay styles (position/inset/z-index)
+ * are ALSO set inline on the overlay element itself so the wizard can never
+ * be broken by a stylesheet load hiccup.
+ */
+
+.onb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+}
+
+/* ── Top bar: quiet skip link ─────────────────────────────────────────── */
+.onb-topbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 16px 22px;
+  flex-shrink: 0;
+}
+.onb-skip {
+  background: none;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+.onb-skip:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-background-surface-hover);
+}
+
+/* ── Centered column ──────────────────────────────────────────────────── */
+.onb-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 0 32px;
+}
+.onb-col {
+  width: 100%;
+  max-width: 560px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* One step visible at a time; subtle fade/slide between steps. */
+.onb-step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding-top: max(28px, 7vh);
+  padding-bottom: 8px;
+  animation: onb-step-in 180ms ease-out both;
+}
+@keyframes onb-step-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .onb-step { animation: none; }
+}
+
+/* ── Type ─────────────────────────────────────────────────────────────── */
+.onb-serif {
+  font-family: "New York", "Georgia", "Times New Roman", serif;
+}
+.onb-h1 {
+  font-size: 36px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+.onb-h2 {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+.onb-lead {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+.onb-fineprint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  opacity: 0.85;
+  margin: 0;
+}
+
+/* Welcome logo tile (the SVG carries its own graphite background). */
+.onb-logo {
+  display: block;
+  border-radius: 20px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+}
+
+/* ── Permission rows ──────────────────────────────────────────────────── */
+.onb-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.onb-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  background-color: var(--color-background-surface);
+  transition: border-color 0.2s ease;
+}
+.onb-row--granted { border-color: rgba(16, 185, 129, 0.45); }
+.onb-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.onb-row-title { font-size: 14px; font-weight: 700; color: var(--color-text-primary); }
+.onb-row-desc { font-size: 12px; line-height: 1.45; color: var(--color-text-secondary); }
+
+.onb-check {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  background-color: #10b981;
+  color: #ffffff;
+}
+.onb-check--pending {
+  background-color: var(--color-background-surface-hover);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-strong);
+}
+
+/* ── Model / option cards ─────────────────────────────────────────────── */
+.onb-card {
+  border: 1px solid var(--color-border);
+  background-color: var(--color-background-surface);
+  border-radius: 16px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.onb-card--done { border-color: rgba(16, 185, 129, 0.45); }
+.onb-card-head { display: flex; align-items: center; gap: 12px; }
+.onb-card-title { font-size: 16px; font-weight: 700; color: var(--color-text-primary); flex: 1; min-width: 0; }
+.onb-card-desc { font-size: 13px; line-height: 1.55; color: var(--color-text-secondary); margin: 0; }
+.onb-card-meta { font-size: 12px; color: var(--color-text-secondary); }
+.onb-card-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background-color: var(--color-background);
+  border: 1px solid var(--color-border);
+}
+
+/* Download progress */
+.onb-bar {
+  height: 6px;
+  border-radius: 999px;
+  background-color: var(--color-background-surface-hover);
+  overflow: hidden;
+}
+.onb-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background-color: var(--color-accent);
+  transition: width 0.25s ease;
+}
+.onb-downloaded {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #10b981;
+}
+
+/* Hotkey chip on the final step */
+.onb-kbd {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border-strong);
+  background-color: var(--color-background-surface);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+/* ── Footer: Back / Continue + progress dots ──────────────────────────── */
+.onb-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 0 6px;
+}
+.onb-dots {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  padding: 12px 0 26px;
+}
+.onb-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--color-border-strong);
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+.onb-dot--active {
+  background-color: var(--color-accent);
+  transform: scale(1.25);
+}
+.onb-dot--done { background-color: var(--color-text-secondary); }
