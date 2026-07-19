@@ -83,6 +83,14 @@ ndarray-npy = { version = "0.9", optional = true }
 # build script mis-invokes `ar` on missing ggml object files).
 llama-cpp-2 = { version = "0.1.122", features = ["metal"], optional = true }
 speakrs = { version = "0.1", optional = true, features = ["coreml"] }
+# MOSS-Transcribe-Diarize (joint transcription + speaker diarization) via
+# transcribe.cpp — a ggml runtime with its own bundled ggml. NOTE: this is a
+# second ggml next to whisper-rs's; validated to link/run side-by-side (both
+# keep their symbols internal). Metal on by default (crate default feature).
+# Pinned to git: MOSS family support merged 2026-07-13 (#84), one day AFTER
+# the crates.io 0.1.3 release ("unsupported architecture" on 0.1.3). Move to
+# a version requirement once 0.1.4+ ships.
+transcribe-cpp = { git = "https://github.com/handy-computer/transcribe.cpp", rev = "5a5a49664a8ea1f0e5b3be1dfc544730d1b62561", optional = true }
 
 # Core Graphics / Core Foundation — used for the configurable global hotkey
 # (CGEventTap monitor, incl. bare modifier keys like Left Option) and, under
@@ -99,14 +107,14 @@ objc2-foundation = { version = "0.2", optional = true, features = ["all"] }
 dispatch2 = { version = "0.2", optional = true }
 # NSEvent global/local monitors for the dictation hotkey (AppKit-managed,
 # unlike CGEventTap which macOS keeps force-disabling). Always available.
-objc2-app-kit = { version = "0.2", features = ["NSEvent", "block2"] }
+objc2-app-kit = { version = "0.2", features = ["NSEvent", "block2", "NSPasteboard"] }
 block2 = "0.5"
 
 [features]
 # Neural speaker diarization (pyannote via speakrs/ONNX) is on by default so
 # meetings/imports get real multi-speaker separation. Models auto-download from
 # the HuggingFace cache on first use.
-default = ["neural-diarization", "parakeet", "audio8"]
+default = ["neural-diarization", "parakeet", "audio8", "moss"]
 # Native macOS paths: CGEvent-based text injection + ScreenCaptureKit system
 # audio capture. Off by default; the existing AppleScript + cpal-loopback
 # fallbacks remain the default behavior.
@@ -128,5 +136,8 @@ audio8 = ["onnx", "dep:rustfft", "dep:tokenizers", "dep:memmap2", "dep:ndarray-n
 silero-vad = ["onnx"]
 # Neural speaker diarization via speakrs
 neural-diarization = ["dep:speakrs"]
+# MOSS-Transcribe-Diarize 0.9B: joint STT + speaker diarization finalize pass
+# (GGUF via transcribe.cpp, Metal-accelerated).
+moss = ["dep:transcribe-cpp"]
 # Everything (full ML build)
-ml-all = ["parakeet", "silero-vad", "neural-diarization", "embedded-llm"]
+ml-all = ["parakeet", "silero-vad", "neural-diarization", "embedded-llm", "moss"]
