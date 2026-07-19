@@ -1,138 +1,193 @@
+//! Insert transcribed text at the cursor position.
+//!
+//! Insertion strategy (ported from FluidVoice's `TypingService`, which is the
+//! most battle-tested implementation of this on macOS):
+//!
+//! 1. **Clipboard-free unicode typing (primary).** The text is posted as
+//!    chunked CGEvent unicode-string keyboard events (`keyboardSetUnicodeString`,
+//!    virtual key 0). No clipboard involvement at all — which removes the
+//!    entire class of "restore raced the target app's paste read" bugs that
+//!    made the old ⌘V path intermittent — and it is what works best in
+//!    terminals and Electron apps (VS Code, Discord, Slack).
+//! 2. **Clipboard + ⌘V CGEvent (fallback).** Sets the clipboard, posts a real
+//!    ⌘V, then restores the old clipboard from a background thread — guarded
+//!    by NSPasteboard `changeCount` (never clobbers something the user copied
+//!    meanwhile) and only after a generous settle window, not the old fixed
+//!    300 ms.
+//! 3. **AppleScript ⌘V (last resort).** The original `osascript` path.
+//!
+//! All CGEvent posting requires the Accessibility permission; we gate on
+//! `AXIsProcessTrusted()` up front and return an actionable error so the UI
+//! can tell the user instead of failing silently.
+
 use std::process::Command;
 use std::io::Write;
-use log::{info, error};
+use log::{info, warn, error};
+
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+}
+
+/// Max UTF-16 units per unicode keyboard event (FluidVoice uses 200).
+const UNICODE_CHUNK: usize = 200;
+
+/// 'V' virtual key code on ANSI layouts (used only by the ⌘V fallbacks).
+const KEY_V: CGKeyCode = 0x09;
 
 pub struct TextInjector;
 
 impl TextInjector {
-    /// Injects text at the current cursor position by setting the clipboard and simulating Command+V.
-    ///
-    /// The public contract is unchanged: set clipboard -> synthesize Cmd+V -> restore
-    /// the original clipboard after a short delay.
-    ///
-    /// When the `macos-native` feature is enabled the Cmd+V keystroke is
-    /// synthesized with Core Graphics `CGEvent`s (fast, no subprocess). When the
-    /// feature is off (default), the existing AppleScript / `osascript` path is
-    /// used unchanged. If the native path fails at runtime we fall back to the
-    /// AppleScript path so a paste is still attempted.
+    /// Injects text at the current cursor position.
     pub fn inject(text: &str) -> anyhow::Result<()> {
         if text.trim().is_empty() {
             return Ok(());
         }
 
+        if !unsafe { AXIsProcessTrusted() } {
+            return Err(anyhow::anyhow!(
+                "Voco needs the Accessibility permission to type text. \
+                 Enable it in System Settings → Privacy & Security → Accessibility (toggle Voco off and on)."
+            ));
+        }
+
         info!("Injecting {} characters of text...", text.len());
 
-        // 1. Get original clipboard content so we can restore it later (premium feature!)
-        let original_clipboard = Self::get_clipboard().unwrap_or_default();
-
-        // 2. Set clipboard content to the text
-        if let Err(e) = Self::set_clipboard(text) {
-            error!("Failed to set clipboard: {:?}", e);
-            return Err(anyhow::anyhow!("Failed to set clipboard: {}", e));
+        // 1. Clipboard-free unicode typing.
+        match Self::inject_unicode_events(text) {
+            Ok(()) => {
+                info!("Text injected (clipboard-free unicode events).");
+                return Ok(());
+            }
+            Err(e) => warn!("Unicode-event injection failed ({e}); falling back to clipboard paste."),
         }
 
-        // 3. Trigger Command+V.
-        Self::paste();
-
-        // 4. Restore original clipboard content after a brief delay to allow paste operation to finish
-        let original_clone = original_clipboard.clone();
-        if !original_clone.is_empty() {
-            // Restore on a plain OS thread — this runs from the dictation worker
-            // thread, which has no Tokio reactor, so avoid async entirely.
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                if let Err(e) = Self::set_clipboard(&original_clone) {
-                    error!("Failed to restore original clipboard: {:?}", e);
-                }
-            });
+        // 2. Clipboard + native ⌘V.
+        match Self::inject_clipboard_paste(text) {
+            Ok(()) => {
+                info!("Text injected (clipboard + CGEvent ⌘V).");
+                return Ok(());
+            }
+            Err(e) => warn!("CGEvent clipboard paste failed ({e}); falling back to AppleScript."),
         }
 
+        // 3. Legacy AppleScript path.
+        Self::inject_applescript_paste(text)
+    }
+
+    /// Type the text directly as unicode keyboard events — no clipboard.
+    ///
+    /// Chunks are split on UTF-16 boundaries that never separate a surrogate
+    /// pair, so emoji and non-BMP characters survive intact.
+    fn inject_unicode_events(text: &str) -> anyhow::Result<()> {
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .map_err(|_| anyhow::anyhow!("failed to create CGEventSource"))?;
+
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let mut start = 0usize;
+        while start < utf16.len() {
+            let mut end = (start + UNICODE_CHUNK).min(utf16.len());
+            // Don't split a surrogate pair: if the last unit in the chunk is a
+            // high surrogate, leave it for the next chunk.
+            if end < utf16.len() && (0xD800..=0xDBFF).contains(&utf16[end - 1]) {
+                end -= 1;
+            }
+            let chunk = &utf16[start..end];
+
+            let down = CGEvent::new_keyboard_event(source.clone(), 0, true)
+                .map_err(|_| anyhow::anyhow!("failed to create key-down event"))?;
+            down.set_string_from_utf16_unchecked(chunk);
+            down.post(CGEventTapLocation::HID);
+
+            let up = CGEvent::new_keyboard_event(source.clone(), 0, false)
+                .map_err(|_| anyhow::anyhow!("failed to create key-up event"))?;
+            up.post(CGEventTapLocation::HID);
+
+            start = end;
+            // Tiny gap between chunks so slow event queues keep ordering.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         Ok(())
     }
 
-    /// Synthesize a Command+V paste keystroke.
-    ///
-    /// Uses the native CGEvent path when `macos-native` is enabled, falling back
-    /// to AppleScript on any error. When the feature is off, always uses AppleScript.
-    fn paste() {
-        #[cfg(feature = "macos-native")]
-        {
-            match Self::paste_native() {
-                Ok(()) => {
-                    info!("Text successfully pasted (native CGEvent).");
-                    return;
-                }
-                Err(e) => {
-                    error!("Native CGEvent paste failed ({:?}); falling back to AppleScript.", e);
-                }
-            }
-        }
+    /// Clipboard + native ⌘V fallback with a race-safe restore.
+    fn inject_clipboard_paste(text: &str) -> anyhow::Result<()> {
+        let original_clipboard = Self::get_clipboard().unwrap_or_default();
+        Self::set_clipboard(text)?;
+        let our_change_count = Self::pasteboard_change_count();
 
-        Self::paste_applescript();
-    }
-
-    /// Native Cmd+V using Core Graphics events.
-    ///
-    /// This is the standard, low-latency approach: post a key-down and key-up for
-    /// the 'V' key (virtual key code 0x09, the same `key code 9` the AppleScript
-    /// path uses) with the Command modifier flag set. Requires Accessibility
-    /// permission (the app must be granted control under
-    /// System Settings > Privacy & Security > Accessibility); if permission is
-    /// missing the events are silently dropped by the OS, so the caller relies on
-    /// the AppleScript fallback path for that case.
-    #[cfg(feature = "macos-native")]
-    fn paste_native() -> anyhow::Result<()> {
-        use core_graphics::event::{
-            CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode,
-        };
-        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-
-        // 'V' virtual key code (ANSI keyboard); matches AppleScript `key code 9`.
-        const KEY_V: CGKeyCode = 0x09;
-
-        // A combined-session-state source lets the injected modifier flags combine
-        // correctly with the synthetic key events.
         let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-            .map_err(|_| anyhow::anyhow!("Failed to create CGEventSource (accessibility permission?)"))?;
-
-        // Key down with Command held.
+            .map_err(|_| anyhow::anyhow!("failed to create CGEventSource"))?;
         let key_down = CGEvent::new_keyboard_event(source.clone(), KEY_V, true)
-            .map_err(|_| anyhow::anyhow!("Failed to create key-down CGEvent"))?;
+            .map_err(|_| anyhow::anyhow!("failed to create key-down CGEvent"))?;
         key_down.set_flags(CGEventFlags::CGEventFlagCommand);
         key_down.post(CGEventTapLocation::HID);
-
-        // Key up (also with Command flag so the OS sees a clean release).
+        std::thread::sleep(std::time::Duration::from_millis(10));
         let key_up = CGEvent::new_keyboard_event(source, KEY_V, false)
-            .map_err(|_| anyhow::anyhow!("Failed to create key-up CGEvent"))?;
+            .map_err(|_| anyhow::anyhow!("failed to create key-up CGEvent"))?;
         key_up.set_flags(CGEventFlags::CGEventFlagCommand);
         key_up.post(CGEventTapLocation::HID);
 
+        // Restore the user's clipboard from a background thread. Unlike the
+        // old fixed 300 ms, wait a generous settle window (slow Electron apps
+        // read the pasteboard late) and ONLY restore if the pasteboard still
+        // holds our text — if the user copied something meanwhile, leave it.
+        if !original_clipboard.is_empty() {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(2_000));
+                if Self::pasteboard_change_count() == our_change_count {
+                    if let Err(e) = Self::set_clipboard(&original_clipboard) {
+                        error!("Failed to restore original clipboard: {:?}", e);
+                    }
+                } else {
+                    info!("Skipped clipboard restore: clipboard changed externally after paste.");
+                }
+            });
+        }
         Ok(())
     }
 
-    /// Existing AppleScript paste path (default behavior).
-    fn paste_applescript() {
+    /// NSPasteboard.general.changeCount — bumps on every clipboard write.
+    fn pasteboard_change_count() -> isize {
+        use objc2_app_kit::NSPasteboard;
+        unsafe { NSPasteboard::generalPasteboard().changeCount() }
+    }
+
+    /// Original AppleScript path, kept as the last resort.
+    fn inject_applescript_paste(text: &str) -> anyhow::Result<()> {
+        let original_clipboard = Self::get_clipboard().unwrap_or_default();
+        Self::set_clipboard(text)?;
+        let our_change_count = Self::pasteboard_change_count();
+
         let script = r#"
             tell application "System Events"
                 key code 9 using {command down} -- 9 is the virtual key code for 'V'
             end tell
         "#;
+        let status = Command::new("osascript").arg("-e").arg(script).status();
+        let ok = matches!(&status, Ok(s) if s.success());
+        if ok {
+            info!("Text successfully pasted (AppleScript).");
+        } else {
+            error!("AppleScript paste failed: {:?}", status);
+        }
 
-        let status = Command::new("osascript")
-            .arg("-e")
-            .arg(script)
-            .status();
+        if !original_clipboard.is_empty() {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(2_000));
+                if Self::pasteboard_change_count() == our_change_count {
+                    let _ = Self::set_clipboard(&original_clipboard);
+                }
+            });
+        }
 
-        match status {
-            Ok(s) if s.success() => {
-                info!("Text successfully pasted.");
-            }
-            Ok(s) => {
-                error!("AppleScript execution failed with status: {:?}", s);
-            }
-            Err(e) => {
-                error!("Failed to execute AppleScript: {:?}", e);
-            }
+        if ok {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("AppleScript paste failed: {:?}", status))
         }
     }
 

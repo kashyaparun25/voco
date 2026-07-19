@@ -137,6 +137,20 @@ impl DictationService {
                     }
                     #[cfg(not(feature = "audio8"))]
                     { return Err("Audio8 support is not built into this build".to_string()); }
+                } else if model_id.contains("moss") {
+                    #[cfg(feature = "moss")]
+                    {
+                        let mp = crate::stt::moss::MossEngine::model_path_default(self.model_manager.models_dir());
+                        if !mp.exists() {
+                            return Err("The MOSS Transcribe+Diarize model isn't downloaded yet — download it in Settings → AI Providers & Models first.".to_string());
+                        }
+                        info!("Loading local MOSS-Transcribe-Diarize model from: {:?}", mp);
+                        let eng = crate::stt::moss::MossSttEngine::new(&mp, crate::stt::stt_language(&self.db))
+                            .map_err(|e| format!("Failed to load MOSS engine: {:?}", e))?;
+                        Arc::new(eng) as Arc<dyn SttEngine>
+                    }
+                    #[cfg(not(feature = "moss"))]
+                    { return Err("MOSS support is not built into this build".to_string()); }
                 } else {
                     info!("Loading local Whisper model: {}", model_id);
                     let model_path = self.model_manager.get_model_path(&model_id)
@@ -260,6 +274,13 @@ impl DictationService {
         // Optional start cue.
         crate::services::sound::cue(&self.db, crate::services::sound::Cue::Start);
 
+        // Live transcript preview (FluidVoice-style): fast engines re-transcribe
+        // the growing session audio on a timer and stream the words to the pill.
+        // Parakeet re-runs the whole prefix comfortably faster than real time;
+        // Whisper/API/MOSS engines keep the waveform-only pill.
+        let live_preview = model_id.contains("parakeet");
+        crate::commands::window::set_pill_expanded(live_preview);
+
         // Show the dictation pill on the monitor the user is on. Done here (in
         // the service) so it appears for EVERY trigger — global hotkey, tray,
         // or the on-screen button — not just the button path.
@@ -336,6 +357,73 @@ impl DictationService {
         // 5. Initialize VAD (neural Silero when available, else energy detector).
         let mut vad = Vad::new(threshold_rms, speech_ms, hangover_ms, self.model_manager.models_dir());
 
+        // Live-preview machinery: a parallel copy of the session audio for the
+        // preview thread, a stop flag, and a gate that serializes ALL model
+        // inference so a live pass never runs concurrently with the final pass
+        // (FluidVoice serializes CoreML access the same way).
+        let preview_buf: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let preview_stop = Arc::new(AtomicBool::new(false));
+        let inference_gate: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+        if live_preview {
+            let buf = preview_buf.clone();
+            let stop = preview_stop.clone();
+            let gate = inference_gate.clone();
+            let eng = engine.clone();
+            let app = app_handle.clone();
+            std::thread::spawn(move || {
+                // FluidVoice cadence for offline Parakeet: tick every 600ms,
+                // first pass only after 1s of audio, re-transcribing the ENTIRE
+                // buffer from t=0 each time (the model is far faster than
+                // real time, so the growing prefix stays cheap).
+                const TICK_MS: u64 = 600;
+                const MIN_SAMPLES: usize = 16_000;
+                let mut last_emitted = String::new();
+                let mut skip_next = false;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // Backpressure: if the previous pass overran the tick,
+                    // give the machine one tick to breathe.
+                    if skip_next {
+                        skip_next = false;
+                        continue;
+                    }
+                    let snapshot = { buf.lock().clone() };
+                    if snapshot.len() < MIN_SAMPLES {
+                        continue;
+                    }
+                    let started = std::time::Instant::now();
+                    let text = {
+                        let _serialized = gate.lock();
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        match tauri::async_runtime::block_on(eng.transcribe(&snapshot)) {
+                            Ok(r) => r.text.trim().to_string(),
+                            Err(e) => {
+                                log::warn!("Live preview pass failed: {:?}", e);
+                                skip_next = true;
+                                continue;
+                            }
+                        }
+                    };
+                    if started.elapsed().as_millis() as u64 > TICK_MS {
+                        skip_next = true;
+                    }
+                    if text.is_empty() || stop.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    if text != last_emitted {
+                        last_emitted = text.clone();
+                        let _ = app.emit("dictation-partial", text);
+                    }
+                }
+                info!("Live preview thread finished.");
+            });
+        }
+
         // 5. Spawn Audio Processing Loop
         let active_capture_clone = self.active_capture.clone();
         let warm_mic_clone = self.warm_mic.clone();
@@ -356,6 +444,9 @@ impl DictationService {
             .unwrap_or(None)
             .map(|v| v != "false" && v != "0")
             .unwrap_or(true);
+        let preview_buf_thread = preview_buf.clone();
+        let preview_stop_thread = preview_stop.clone();
+        let inference_gate_thread = inference_gate.clone();
 
         std::thread::spawn(move || {
             // FluidVoice-style session capture: buffer the ENTIRE recording from
@@ -402,6 +493,9 @@ impl DictationService {
 
                 if session_buffer.len() < MAX_SESSION_SAMPLES {
                     session_buffer.extend_from_slice(&samples);
+                    if live_preview {
+                        preview_buf_thread.lock().extend_from_slice(&samples);
+                    }
                 }
 
                 if let Some(speech_started) = vad_change {
@@ -440,6 +534,11 @@ impl DictationService {
                 }
                 session_buffer.extend_from_slice(&samples);
             }
+
+            // The session is over: stop the live preview loop. The final pass
+            // below serializes on the inference gate, so an in-flight live
+            // pass finishes before the final transcription starts.
+            preview_stop_thread.store(true, Ordering::Relaxed);
 
             // Processing phase
             let should_transcribe = {
@@ -537,6 +636,9 @@ impl DictationService {
                     info!("Dictation: normalized audio {:.1}x (peak was {:.3}).", gain, peak);
                 }
                 info!("Transcribing {} speech samples...", speech_buffer.len());
+                // Serialize with the live preview: wait for any in-flight
+                // preview pass to finish before running the final one.
+                let _inference_serialized = inference_gate_thread.lock();
                 // This runs on a plain OS thread (no ambient Tokio reactor), so
                 // drive the async transcription on Tauri's managed runtime.
                 let transcription_res = tauri::async_runtime::block_on(
@@ -599,6 +701,13 @@ impl DictationService {
                             if auto_paste {
                                 if let Err(e) = TextInjector::inject(&text) {
                                     error!("Failed to inject text: {:?}", e);
+                                    // Surface it — a silent paste failure looks
+                                    // like the app ate the dictation (the text
+                                    // is still in history + clipboard).
+                                    let _ = app_handle_clone.emit(
+                                        "dictation-error",
+                                        format!("Auto-paste failed: {}", e),
+                                    );
                                 }
                             }
                         }
