@@ -177,3 +177,18 @@ pub fn clear_app_logs() -> Result<(), String> {
     let path = app_log_path()?;
     std::fs::write(&path, "").map_err(|e| format!("Cannot clear {}: {e}", path.display()))
 }
+
+/// The bundled dictation cue styles for the settings picker: (id, label).
+#[tauri::command]
+pub fn list_sound_cue_styles() -> Vec<(String, String)> {
+    crate::services::sound::CUE_STYLES
+        .iter()
+        .map(|(id, name)| (id.to_string(), name.to_string()))
+        .collect()
+}
+
+/// Play a cue style's start+stop pair once (settings preview).
+#[tauri::command]
+pub fn preview_sound_cue(style: String) {
+    crate::services::sound::preview(&style);
+}

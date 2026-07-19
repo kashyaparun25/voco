@@ -50,7 +50,8 @@
     "targets": "all",
     "resources": [
       "resources/mediaremote-helper.dylib",
-      "resources/mediaremote-adapter.pl"
+      "resources/mediaremote-adapter.pl",
+      "resources/sounds/*"
     ],
     "icon": [
       "icons/32x32.png",

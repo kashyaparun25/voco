@@ -73,6 +73,8 @@ export default function DictationSettings() {
   const [aiPrompt, setAiPrompt] = useState<string>("");
   const [removeFillers, setRemoveFillers] = useState<boolean>(true);
   const [soundFeedback, setSoundFeedback] = useState<boolean>(false);
+  const [cueStyle, setCueStyle] = useState<string>("deep_tap");
+  const [cueStyles, setCueStyles] = useState<Array<[string, string]>>([["deep_tap", "Deep tap"]]);
   const [appProfiles, setAppProfiles] = useState<boolean>(true);
 
   useEffect(() => {
@@ -104,6 +106,14 @@ export default function DictationSettings() {
       if (rf != null) setRemoveFillers(rf === "true");
       const sf = await get("sound_feedback");
       if (sf != null) setSoundFeedback(sf === "true");
+      const cs = await get("sound_cue_style");
+      if (cs) setCueStyle(cs);
+      try {
+        const styles = await invoke<Array<[string, string]>>("list_sound_cue_styles");
+        if (styles?.length) setCueStyles(styles);
+      } catch {
+        /* backend unavailable */
+      }
       const uap = await get("use_app_profiles");
       if (uap != null) setAppProfiles(uap !== "false");
     };
@@ -207,6 +217,51 @@ export default function DictationSettings() {
           checked={soundFeedback}
           onChange={() => toggle("sound_feedback", soundFeedback, setSoundFeedback)}
         />
+
+        {soundFeedback && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, maxWidth: 480 }}>
+            <select
+              value={cueStyle}
+              onChange={(e) => {
+                setCueStyle(e.target.value);
+                void persist("sound_cue_style", e.target.value);
+                void invoke("preview_sound_cue", { style: e.target.value });
+              }}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                borderRadius: 8,
+                backgroundColor: "var(--color-background-elevated)",
+                color: "var(--color-text-primary)",
+                border: "1px solid var(--color-border-strong)",
+                fontSize: 13,
+                cursor: "pointer",
+                outline: "none",
+              }}
+            >
+              {cueStyles.map(([id, name]) => (
+                <option key={id} value={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => void invoke("preview_sound_cue", { style: cueStyle })}
+              title="Preview start and stop cues"
+              style={{
+                padding: "8px 14px",
+                borderRadius: 8,
+                background: "transparent",
+                color: "var(--color-text-secondary)",
+                border: "1px solid var(--color-border-strong)",
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              ▶ Preview
+            </button>
+          </div>
+        )}
       </VStack>
 
       {/* Text & formatting */}

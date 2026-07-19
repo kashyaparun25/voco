@@ -165,6 +165,13 @@ pub fn run() {
             ) {
                 crate::services::media_control::init_helper(pl, dylib);
             }
+            // Bundled dictation sound cues (resources/sounds/*.wav).
+            if let Ok(sounds) = app
+                .path()
+                .resolve("resources/sounds", tauri::path::BaseDirectory::Resource)
+            {
+                crate::services::sound::init_sounds_dir(sounds);
+            }
 
             // Set up state
             app.manage(AppState::new(db, model_manager));
@@ -297,6 +304,8 @@ pub fn run() {
             commands::settings::read_app_logs,
             commands::settings::reveal_app_logs,
             commands::settings::clear_app_logs,
+            commands::settings::list_sound_cue_styles,
+            commands::settings::preview_sound_cue,
             commands::llm::summarize_meeting,
             commands::llm::summarize_meeting_streaming,
             commands::llm::regenerate_summary,
