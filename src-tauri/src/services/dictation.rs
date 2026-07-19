@@ -395,7 +395,17 @@ impl DictationService {
                         skip_next = false;
                         continue;
                     }
-                    let snapshot = { buf.lock().clone() };
+                    // Rolling window: preview only the most recent ~30 s. The
+                    // pill shows the tail anyway, and re-running the FULL
+                    // growing prefix through a quadratic-memory encoder is the
+                    // long-dictation OOM (37 GB observed). Constant window =
+                    // constant per-tick cost regardless of session length.
+                    const PREVIEW_WINDOW: usize = 30 * 16_000;
+                    let snapshot = {
+                        let b = buf.lock();
+                        let start = b.len().saturating_sub(PREVIEW_WINDOW);
+                        b[start..].to_vec()
+                    };
                     if snapshot.len() < MIN_SAMPLES {
                         continue;
                     }
@@ -471,9 +481,9 @@ impl DictationService {
             // already includes the ~800ms hangover of room tone past the last
             // word). Used to trim dead air at both ends before STT — long
             // non-speech stretches make Whisper/Audio8 hallucinate tokens.
+            // VAD is annotation-only for dictation: it drives AutoStop and the
+            // pill's speech events, but never gates or windows the audio.
             let mut first_speech_mark: Option<usize> = None;
-            let mut last_speech_end: Option<usize> = None;
-            let mut vad_active = false;
 
             // Handle levels in a background channel
             let level_app_handle = app_handle_clone.clone();
@@ -522,15 +532,12 @@ impl DictationService {
                 if let Some(speech_started) = vad_change {
                     if speech_started {
                         info!("VAD: Speech started");
-                        vad_active = true;
                         if first_speech_mark.is_none() {
                             first_speech_mark = Some(session_buffer.len());
                         }
                         let _ = app_handle_clone.emit("dictation-speech-started", ());
                     } else {
                         info!("VAD: Speech ended");
-                        vad_active = false;
-                        last_speech_end = Some(session_buffer.len());
                         let _ = app_handle_clone.emit("dictation-speech-stopped", ());
 
                         // In AutoStop mode, automatically stop dictation when speech ends
@@ -595,51 +602,19 @@ impl DictationService {
                 session_buffer.extend_from_slice(&samples);
             }
 
-            // Cut the STT window out of the full session using the VAD envelope:
-            // a generous lead-in before the first detected speech (the VAD
-            // confirms ~150ms late, and quiet onsets can lag more) through the
-            // last detected end (which already includes the hangover). Dead air
-            // outside the envelope makes Whisper/Audio8 hallucinate tokens. If
-            // speech was still active at stop, keep everything to the end.
-            const PRE_PAD_SAMPLES: usize = 2 * 16000; // 2s of onset insurance
-            let mut speech_buffer: Vec<f32> = match first_speech_mark {
-                Some(first) => {
-                    let start = first.saturating_sub(PRE_PAD_SAMPLES);
-                    let end = if vad_active {
-                        session_buffer.len()
-                    } else {
-                        last_speech_end.unwrap_or(session_buffer.len())
-                    };
-                    let end = end.clamp(start, session_buffer.len());
-                    if start > 0 || end < session_buffer.len() {
-                        info!(
-                            "Dictation: windowing session {:.1}s → {:.1}s around detected speech.",
-                            session_buffer.len() as f32 / 16000.0,
-                            (end - start) as f32 / 16000.0
-                        );
-                    }
-                    session_buffer[start..end].to_vec()
-                }
-                None => Vec::new(),
-            };
-            drop(session_buffer);
+            // FluidVoice-style: transcribe the WHOLE session, always. The VAD
+            // no longer windows the audio — the old envelope trim silently
+            // dropped quiet speech the detector missed (trailing words the
+            // live preview had shown), and a cut mid-phoneme decodes as a
+            // different word. The models handle leading/trailing silence fine,
+            // and a truly empty result triggers the quiet-mic diagnostic below.
+            let mut speech_buffer: Vec<f32> = session_buffer;
 
             if should_transcribe && speech_buffer.is_empty() {
-                // The whole session passed without the VAD ever firing. Tell the
-                // user WHY nothing happened — the most common cause is a mic
-                // signal too quiet to distinguish from the room (low input
-                // volume, wrong device, speaking away from the mic).
-                info!(
-                    "Dictation: no speech detected this session (loudest chunk RMS {:.4}); nothing to transcribe.",
-                    max_chunk_rms
-                );
+                info!("Dictation: empty session — no audio was captured.");
                 let _ = app_handle_clone.emit(
                     "dictation-error",
-                    if max_chunk_rms < 0.02 {
-                        "No speech detected — the mic signal was very quiet. Check System Settings → Sound → Input (level and device)."
-                    } else {
-                        "No speech detected in that recording."
-                    },
+                    "No audio was captured — check the input device in Settings.",
                 );
             }
 
@@ -667,11 +642,11 @@ impl DictationService {
                 // Serialize with the live preview: wait for any in-flight
                 // preview pass to finish before running the final one.
                 let _inference_serialized = inference_gate_thread.lock();
-                // This runs on a plain OS thread (no ambient Tokio reactor), so
-                // drive the async transcription on Tauri's managed runtime.
-                let transcription_res = tauri::async_runtime::block_on(
-                    engine.transcribe(&speech_buffer)
-                );
+                // Long dictations are transcribed in bounded chunks — encoder
+                // self-attention memory is quadratic in input length, and a
+                // single multi-minute pass can balloon to tens of GB (same
+                // failure class as the meeting-pipeline 43 GB spike).
+                let transcription_res = transcribe_long(&engine, &speech_buffer);
 
                 // Persist the raw clip (when saving is enabled) + a history row.
                 // Shared by the success and failure paths so a recording is never
@@ -741,6 +716,22 @@ impl DictationService {
                                     );
                                 }
                             }
+                        } else {
+                            // Nothing recognized in the whole session. Most
+                            // common cause: a mic signal too quiet (low input
+                            // volume, wrong device, speaking away from it).
+                            info!(
+                                "Dictation: empty transcription (loudest chunk RMS {:.4}).",
+                                max_chunk_rms
+                            );
+                            let _ = app_handle_clone.emit(
+                                "dictation-error",
+                                if max_chunk_rms < 0.02 {
+                                    "No speech detected — the mic signal was very quiet. Check System Settings → Sound → Input (level and device)."
+                                } else {
+                                    "No speech detected in that recording."
+                                },
+                            );
                         }
                     }
                     Err(e) => {
@@ -847,5 +838,105 @@ impl DictationService {
             c.mark_stop();
         }
         Ok(())
+    }
+}
+
+/// Transcribe audio of any length with bounded memory: encoder self-attention
+/// grows quadratically with input length, so anything beyond ~30 s is split
+/// into chunks — cut at the quietest 200 ms window near each boundary so words
+/// aren't sliced mid-syllable — transcribed sequentially, and joined.
+fn transcribe_long(
+    engine: &std::sync::Arc<dyn SttEngine>,
+    audio: &[f32],
+) -> anyhow::Result<crate::stt::TranscriptionResult> {
+    // 90s: high enough that typical dictations are a SINGLE pass (chunk
+    // boundaries can clip words), low enough that encoder attention stays
+    // bounded (~1 GB transient at 90 s vs the multi-GB blowups beyond ~5 min).
+    const MAX_CHUNK: usize = 90 * 16_000;
+
+    if audio.len() <= MAX_CHUNK {
+        return tauri::async_runtime::block_on(engine.transcribe(audio));
+    }
+
+    info!(
+        "Long dictation ({:.1}s): transcribing in ~30s chunks.",
+        audio.len() as f64 / 16_000.0
+    );
+    let t0 = std::time::Instant::now();
+    let mut text = String::new();
+    let mut pos = 0usize;
+    while pos < audio.len() {
+        let remaining = &audio[pos..];
+        let end = chunk_cut_point(remaining, MAX_CHUNK);
+        let piece = tauri::async_runtime::block_on(engine.transcribe(&remaining[..end]))?;
+        let piece = piece.text.trim().to_string();
+        if !piece.is_empty() {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&piece);
+        }
+        pos += end;
+    }
+    Ok(crate::stt::TranscriptionResult {
+        text,
+        segments: Vec::new(),
+        language: None,
+        processing_time_ms: t0.elapsed().as_millis() as u64,
+    })
+}
+
+/// Where to cut the next chunk: the middle of the quietest 200 ms window in
+/// the last 5 s before `max_len` (falls back to `max_len` for short inputs).
+fn chunk_cut_point(audio: &[f32], max_len: usize) -> usize {
+    const SEARCH: usize = 5 * 16_000;
+    const WIN: usize = 3_200; // 200 ms @ 16 kHz
+
+    if audio.len() <= max_len {
+        return audio.len();
+    }
+    let lo = max_len.saturating_sub(SEARCH);
+    let hi = max_len;
+    let mut best_cut = hi;
+    let mut best_energy = f32::MAX;
+    let mut i = lo;
+    while i + WIN <= hi {
+        let energy: f32 = audio[i..i + WIN].iter().map(|s| s * s).sum();
+        if energy < best_energy {
+            best_energy = energy;
+            best_cut = i + WIN / 2;
+        }
+        i += WIN / 2;
+    }
+    best_cut
+}
+
+#[cfg(test)]
+mod chunking_tests {
+    use super::chunk_cut_point;
+
+    #[test]
+    fn short_audio_is_one_chunk() {
+        let audio = vec![0.1f32; 16_000];
+        assert_eq!(chunk_cut_point(&audio, 30 * 16_000), audio.len());
+    }
+
+    #[test]
+    fn cuts_at_quiet_point_near_boundary() {
+        let max = 30 * 16_000;
+        // Loud everywhere except a silent 200ms pocket at 27s.
+        let mut audio = vec![0.5f32; max + 16_000];
+        let quiet_at = 27 * 16_000;
+        for s in audio[quiet_at..quiet_at + 3_200].iter_mut() {
+            *s = 0.0;
+        }
+        let cut = chunk_cut_point(&audio, max);
+        assert!(cut >= quiet_at && cut <= quiet_at + 3_200, "cut={cut}");
+    }
+
+    #[test]
+    fn cut_never_exceeds_max() {
+        let audio = vec![0.5f32; 40 * 16_000];
+        assert!(chunk_cut_point(&audio, 30 * 16_000) <= 30 * 16_000);
     }
 }
