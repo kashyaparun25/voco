@@ -12,6 +12,12 @@ pub struct Database {
 impl Database {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
+        // WAL lets a second process (the read-only voco-mcp sidecar) read the DB
+        // while the app writes segments mid-meeting — in the default rollback-journal
+        // mode a reader's lock would make those inserts fail with SQLITE_BUSY.
+        // busy_timeout gives either side a grace window on transient contention.
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(3000));
         run_migrations(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
