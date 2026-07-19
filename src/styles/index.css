@@ -12,6 +12,7 @@
 @import "./themes/neon.css" layer(theme);
 @import "./themes/custom.css" layer(theme);
 @import "./pill.css" layer(components);
+@import "./meetings.css";
 @import "./animations.css";
 
 @layer reset, astryx-base, astryx-theme, theme, base, components, utilities;

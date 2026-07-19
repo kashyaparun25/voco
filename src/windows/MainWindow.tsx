@@ -10,15 +10,13 @@ import { TextInput } from "../components/ui";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-// Custom Meeting Components
-import MeetingTimer from "../components/meeting/MeetingTimer";
-import MeetingControls from "../components/meeting/MeetingControls";
-import SpeakerTimeline from "../components/meeting/SpeakerTimeline";
-import MeetingList, { DatabaseMeeting } from "../components/meeting/MeetingList";
-import TranscriptView from "../components/transcript/TranscriptView";
+// Custom Meeting Components (Granola-style meetings section)
+import type { DatabaseMeeting } from "../components/meeting/MeetingList";
+import MeetingsHome, { type UpcomingEvent } from "../components/meeting/MeetingsHome";
+import MeetingNotePage from "../components/meeting/MeetingNotePage";
 import ScreenRecordingOnboarding from "../components/meeting/ScreenRecordingOnboarding";
 import ProviderList from "../components/providers/ProviderList";
-import SummaryView, { SummaryLength, SummaryStyle } from "../components/meeting/SummaryView";
+import type { SummaryLength, SummaryStyle } from "../components/meeting/SummaryView";
 import WaveformCanvas from "../components/waveform/WaveformCanvas";
 
 // Settings panels & theme picker (built by parallel agents)
@@ -40,8 +38,6 @@ import GettingStartedPage from "../components/onboarding/GettingStartedPage";
 import { useDictation } from "../hooks/useDictation";
 import { showToast } from "../hooks/useToast";
 import { useStreamingSummary } from "../hooks/useStreamingSummary";
-import GlobalSearch from "../components/transcript/GlobalSearch";
-import AudioPlayer from "../components/meeting/AudioPlayer";
 import FirstRunOnboarding from "../components/onboarding/FirstRunOnboarding";
 import DictationHistory from "../components/dictation/DictationHistory";
 import { ThemeId } from "../lib/themes";
@@ -196,7 +192,6 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
   const [meetings, setMeetings] = useState<DatabaseMeeting[]>([]);
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [selectedHasRecording, setSelectedHasRecording] = useState(false);
-  const [meetingTab, setMeetingTab] = useState<"transcript" | "summary">("transcript");
   const [settingsSection, setSettingsSection] = useState<
     "appearance" | "general" | "dictation" | "meetings" | "recordings" | "hotkeys" | "ai"
   >("appearance");
@@ -297,7 +292,8 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
   const [isDiarizing, setIsDiarizing] = useState(false);
 
   // ── Google Calendar: upcoming meetings + reminders/auto-start ────────────
-  const [upcoming, setUpcoming] = useState<Array<{ id: string; title: string; start: string; end: string; attendees: string[] }>>([]);
+  const [upcoming, setUpcoming] = useState<UpcomingEvent[]>([]);
+  const [calendarConnected, setCalendarConnected] = useState(false);
   const notifiedRef = useRef<Set<string>>(new Set());
   const startedRef = useRef<Set<string>>(new Set());
 
@@ -321,6 +317,7 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
     const tick = async () => {
       let connected = false;
       try { connected = (await invoke<{ connected: boolean }>("google_status")).connected; } catch { /* ignore */ }
+      if (!cancelled) setCalendarConnected(connected);
       if (!connected) { if (!cancelled) setUpcoming([]); return; }
       let mtgs: typeof upcoming = [];
       try { mtgs = await invoke("list_upcoming_meetings"); } catch { return; }
@@ -423,7 +420,6 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
   const handleSelectMeeting = (id: string) => {
     setDiarizationTurns(null);
     setIsDiarizing(false);
-    setMeetingTab("transcript");
     setSelectedMeetingId(id);
     fetchTranscript(id);
     const found = meetings.find((m) => m.id === id);
@@ -446,6 +442,39 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
       showToast("Reprocessing the saved recording — the transcript will refresh as it runs.", "success");
     } catch (err) {
       showToast(typeof err === "string" ? err : "Failed to reprocess recording", "error");
+    }
+  };
+
+  // Stop is idempotent from the UI's side: the backend may already have
+  // stopped on its own (device died, etc.), in which case it returns
+  // "Meeting is not active". Either way, always clear the UI so the user
+  // is never left stuck.
+  const handleStopMeeting = async () => {
+    try {
+      await invoke("stop_meeting");
+    } catch (err) {
+      console.warn("stop_meeting (already stopped?):", err);
+    } finally {
+      setMeetingRecording(false);
+      setMeetingPaused(false);
+      setActiveMeetingId(null);
+      fetchMeetings();
+    }
+  };
+
+  const handleDeleteMeeting = async () => {
+    if (!selectedMeetingId) return;
+    const title = meetings.find((m) => m.id === selectedMeetingId)?.title || "this meeting";
+    if (!window.confirm(`Delete "${title}"? Its transcript and notes will be removed.`)) return;
+    try {
+      await invoke("delete_meeting", { meetingId: selectedMeetingId });
+      setSelectedMeetingId(null);
+      setSegments([]);
+      setSummary(null);
+      fetchMeetings();
+      showToast("Meeting deleted", "success");
+    } catch (err) {
+      showToast(typeof err === "string" ? err : "Failed to delete meeting", "error");
     }
   };
 
@@ -492,11 +521,14 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
 
   const handleRenameSpeaker = async (speakerId: string, newName: string) => {
     try {
-      await invoke("rename_speaker", { speakerId, newName });
+      // Rust signature is rename_speaker(speaker_id, name) — the arg key must
+      // be `name`, not `newName` (a mismatch is rejected silently by invoke).
+      await invoke("rename_speaker", { speakerId, name: newName });
       if (selectedMeetingId) fetchTranscript(selectedMeetingId);
       fetchMeetings();
     } catch (err) {
       console.error("Failed to rename speaker", err);
+      showToast(`Rename failed: ${err}`, "error");
     }
   };
 
@@ -655,338 +687,122 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
     </VStack>
   );
 
-  const renderMeetings = () => (
-    <HStack style={{ height: "100%", width: "100%", overflow: "hidden" }} gap={0}>
-      <div style={{
-        width: "280px",
-        height: "100%",
-        borderRight: "1px solid var(--color-border)",
-        padding: "16px",
-        boxSizing: "border-box",
-        display: "flex",
-        flexDirection: "column",
-        gap: "16px"
-      }}>
-        <button
-          onClick={() => {
-            if (meetingRecording) return;
-            const done = localStorage.getItem("voco-screen-recording-onboarding-done");
-            if (done !== "true") setIsOnboardingOpen(true);
-            else setIsCreatingMeeting(true);
-          }}
-          disabled={meetingRecording}
-          style={{
-            width: "100%",
-            padding: "11px 16px",
-            borderRadius: "8px",
-            backgroundColor: "var(--color-accent)",
-            color: "#ffffff",
-            fontWeight: 700,
-            fontSize: 14,
-            cursor: meetingRecording ? "default" : "pointer",
-            border: "none",
-            opacity: meetingRecording ? 0.5 : 1,
-          }}
-        >
-          Record New Meeting
-        </button>
-        <button
-          onClick={handleImportAudio}
-          disabled={meetingRecording}
-          style={{
-            width: "100%",
-            padding: "9px 16px",
-            borderRadius: "8px",
-            backgroundColor: "var(--color-background-surface-hover)",
-            color: "var(--color-text-primary)",
-            fontWeight: 600,
-            fontSize: 13,
-            cursor: meetingRecording ? "default" : "pointer",
-            border: "1px solid var(--color-border-strong)",
-            opacity: meetingRecording ? 0.5 : 1,
-          }}
-        >
-          Import Audio File
-        </button>
-        <GlobalSearch
-          onSelectResult={(meetingId, segmentId) => {
-            handleSelectMeeting(meetingId);
-            setScrollToSegmentId(segmentId);
-          }}
-        />
-        {upcoming.length > 0 && (
-          <VStack gap={2} style={{ paddingBottom: 8, borderBottom: "1px solid var(--color-border)" }}>
-            <Text style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--color-text-secondary)" }}>Upcoming</Text>
-            {upcoming.slice(0, 3).map((m) => {
-              const startMs = new Date(m.start).getTime();
-              const rel = isNaN(startMs) ? "" : (() => {
-                const diff = Math.round((startMs - Date.now()) / 60000);
-                if (diff <= 0 && diff > -120) return "now";
-                if (diff > 0 && diff < 60) return `in ${diff}m`;
-                try { return new Date(m.start).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); } catch { return ""; }
-              })();
-              return (
-                <div key={m.id} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid var(--color-border)", backgroundColor: "var(--color-background-surface)" }}>
-                  <Text style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</Text>
-                  <HStack style={{ justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                    <Text style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{rel}{m.attendees.length ? ` · ${m.attendees.length + 1} people` : ""}</Text>
-                    <button
-                      onClick={() => void startMeeting(m.title)}
-                      disabled={meetingRecording}
-                      style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 999, border: "1px solid var(--color-accent)", background: "transparent", color: "var(--color-accent-text, var(--color-accent))", cursor: meetingRecording ? "default" : "pointer", opacity: meetingRecording ? 0.5 : 1 }}
-                    >
-                      Record
-                    </button>
-                  </HStack>
-                </div>
-              );
-            })}
-          </VStack>
-        )}
-        <MeetingList
-          meetings={meetings.filter((m) => m.source !== "import")}
-          selectedMeetingId={selectedMeetingId}
-          onSelectMeeting={handleSelectMeeting}
-          activeMeetingId={activeMeetingId}
-        />
-      </div>
-
-      <div style={{
-        flex: 1,
-        height: "100%",
-        padding: "24px",
-        boxSizing: "border-box",
-        display: "flex",
-        flexDirection: "column",
-        gap: "20px",
-        overflow: "hidden"
-      }}>
-        {isCreatingMeeting ? (
-          <VStack gap={4} style={{ maxWidth: "480px", margin: "auto", padding: "24px", border: "1px solid var(--color-border)", borderRadius: "12px", backgroundColor: "var(--color-background-surface)" }}>
-            <Text style={{ fontSize: "18px", fontWeight: "bold", color: "var(--color-text-primary)" }}>Start New Meeting</Text>
-            <TextInput
-              label="Meeting Title"
-              placeholder="e.g. Project Architecture Sync"
-              value={newMeetingTitle}
-              onChange={(val) => setNewMeetingTitle(val)}
-              style={{ width: "100%" }}
-            />
-            <HStack gap={3} style={{ justifyContent: "flex-end", marginTop: "12px" }}>
-              <Button variant="secondary" onClick={() => setIsCreatingMeeting(false)} label="Cancel" style={{ cursor: "pointer" }} />
-              <Button
-                variant="primary"
-                onClick={() => {
-                  const title = newMeetingTitle.trim() || "Meeting Review";
-                  setNewMeetingTitle("");
-                  void startMeeting(title);
-                }}
-                label="Start Recording"
-                style={{ cursor: "pointer", backgroundColor: "var(--color-accent)", color: "#ffffff", border: "none" }}
-              />
-            </HStack>
-          </VStack>
-        ) : selectedMeetingId ? (
-          <>
-            <HStack style={{ justifyContent: "space-between", alignItems: "center", width: "100%", gap: 12, flexShrink: 0 }}>
-              <VStack gap={1} style={{ flex: 1, minWidth: 0 }}>
-                <Text style={{ fontSize: "22px", fontWeight: "bold", color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
-                  {meetings.find((m) => m.id === selectedMeetingId)?.title || "Active Meeting Recording"}
-                </Text>
-                <Text style={{ fontSize: "12px", color: "var(--color-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
-                  {selectedMeetingId === activeMeetingId ? "● Recording in progress" : "Saved recording"}
-                </Text>
-              </VStack>
-
-              {selectedMeetingId === activeMeetingId ? (
-                <HStack gap={3} style={{ alignItems: "center", flexShrink: 0 }}>
-                  <MeetingTimer seconds={meetingSeconds} />
-                  <MeetingControls
-                    isRecording={meetingRecording}
-                    isPaused={meetingPaused}
-                    onStart={() => {}}
-                    onPause={async () => {
-                      setMeetingPaused(true);
-                      try { await invoke("pause_meeting"); } catch (_) {}
-                    }}
-                    onResume={async () => {
-                      setMeetingPaused(false);
-                      try { await invoke("resume_meeting"); } catch (_) {}
-                    }}
-                    onStop={async () => {
-                      // Stop is idempotent from the UI's side: the backend may
-                      // already have stopped on its own (device died, etc.), in
-                      // which case it returns "Meeting is not active". Either way,
-                      // always clear the UI so the user is never left stuck.
-                      try {
-                        await invoke("stop_meeting");
-                      } catch (err) {
-                        console.warn("stop_meeting (already stopped?):", err);
-                      } finally {
-                        setMeetingRecording(false);
-                        setMeetingPaused(false);
-                        setActiveMeetingId(null);
-                        fetchMeetings();
-                      }
-                    }}
-                  />
-                </HStack>
-              ) : (
-                <HStack gap={2} style={{ alignItems: "center", flexShrink: 0 }}>
-                  {selectedHasRecording && (
-                    <button
-                      onClick={handleReprocessMeeting}
-                      title="Re-run transcription & diarization on the saved recording"
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        padding: "6px 12px",
-                        borderRadius: 8,
-                        border: "1px solid var(--color-border)",
-                        background: "transparent",
-                        color: "var(--color-text-primary)",
-                        cursor: "pointer",
-                      }}
-                    >
-                      ↻ Reprocess recording
-                    </button>
-                  )}
-                  <ExportMenu onExport={handleExportMeeting} />
-                </HStack>
-              )}
-            </HStack>
-
-            {/* Tab bar (Chrome-style): Transcript | AI Summary */}
-            <HStack gap={1} style={{ borderBottom: "1px solid var(--color-border)", flexShrink: 0 }}>
-              <MeetingTab label="Transcript" active={meetingTab === "transcript"} onClick={() => setMeetingTab("transcript")} />
-              {selectedMeetingId !== activeMeetingId && (
-                <MeetingTab label="AI Summary" active={meetingTab === "summary"} onClick={() => setMeetingTab("summary")} />
-              )}
-            </HStack>
-
-            {/* Tab content fills remaining height */}
-            {meetingTab === "summary" && selectedMeetingId !== activeMeetingId ? (
-              <div style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingRight: 4 }}>
-                <SummaryView
-                  meetingId={selectedMeetingId}
-                  meetingTitle={meetings.find((m) => m.id === selectedMeetingId)?.title || "Meeting"}
-                  summary={summary}
-                  isLoading={summaryLoading}
-                  streamingText={streamingSummary.streamingText}
-                  isStreaming={streamingSummary.isStreaming}
-                  onGenerate={handleSummarize}
-                  onRegenerate={handleRegenerateSummary}
-                />
-              </div>
-            ) : (
-              <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: "16px" }}>
-                {selectedMeetingId !== activeMeetingId && (
-                  <AudioPlayer meetingId={selectedMeetingId} />
-                )}
-
-                <SpeakerTimeline
-                  segments={segments}
-                  duration={selectedMeetingId === activeMeetingId ? meetingSeconds : (meetings.find((m) => m.id === selectedMeetingId)?.duration || 0)}
-                />
-
-                <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-                  <HStack style={{ justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                    <Text style={{ fontSize: "14px", fontWeight: "bold", color: "var(--color-text-secondary)" }}>
-                      Transcript
-                    </Text>
-                    {isDiarizing && (
-                      <span className="voco-pill-enter" style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 6,
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        padding: "3px 10px",
-                        borderRadius: "999px",
-                        backgroundColor: "rgba(124, 58, 237, 0.12)",
-                        color: "var(--color-accent-text, var(--color-accent))",
-                        border: "1px solid var(--color-accent)",
-                      }}>
-                        <span style={{
-                          width: 10, height: 10, borderRadius: "50%",
-                          border: "2px solid var(--color-accent)",
-                          borderTopColor: "transparent",
-                          display: "inline-block",
-                          animation: "voco-spin 0.7s linear infinite",
-                        }} />
-                        Diarizing… (first run downloads models)
-                      </span>
-                    )}
-                    {!isDiarizing && diarizationTurns !== null && (
-                      <span className="voco-pill-enter" style={{
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        padding: "2px 8px",
-                        borderRadius: "999px",
-                        backgroundColor: "var(--color-background-surface-hover)",
-                        color: "var(--color-text-secondary)",
-                        border: "1px solid var(--color-border)"
-                      }}>
-                        {diarizationTurns} speaker turns
-                      </span>
-                    )}
-                  </HStack>
-                  <TranscriptView
-                    segments={segments}
-                    onRenameSpeaker={handleRenameSpeaker}
-                    isRecording={selectedMeetingId === activeMeetingId}
-                    scrollToSegmentId={scrollToSegmentId}
-                    onScrolledToSegment={() => setScrollToSegmentId(null)}
-                  />
-                </div>
-              </div>
-            )}
-          </>
+  const renderMeetings = () => {
+    const selectedMeeting = meetings.find((m) => m.id === selectedMeetingId);
+    return (
+      <div className="mtg-pane">
+        {selectedMeetingId ? (
+          <MeetingNotePage
+            meeting={selectedMeeting}
+            meetingId={selectedMeetingId}
+            isActive={selectedMeetingId === activeMeetingId}
+            isPaused={meetingPaused}
+            seconds={selectedMeetingId === activeMeetingId ? meetingSeconds : selectedMeeting?.duration || 0}
+            segments={segments}
+            summary={summary}
+            summaryLoading={summaryLoading}
+            streamingText={streamingSummary.streamingText}
+            isStreaming={streamingSummary.isStreaming}
+            isDiarizing={isDiarizing}
+            diarizationTurns={diarizationTurns}
+            hasRecording={selectedHasRecording}
+            onBack={() => setSelectedMeetingId(null)}
+            onStop={() => void handleStopMeeting()}
+            onPause={async () => {
+              setMeetingPaused(true);
+              try { await invoke("pause_meeting"); } catch (_) { /* backend not active */ }
+            }}
+            onResume={async () => {
+              setMeetingPaused(false);
+              try { await invoke("resume_meeting"); } catch (_) { /* backend not active */ }
+            }}
+            onReprocess={handleReprocessMeeting}
+            onDelete={handleDeleteMeeting}
+            onExport={handleExportMeeting}
+            onGenerate={handleSummarize}
+            onRegenerate={handleRegenerateSummary}
+            onRenameSpeaker={handleRenameSpeaker}
+            onRenamed={() => void fetchMeetings()}
+            onSummarySaved={(s) => {
+              setSummary(s);
+              void fetchMeetings();
+            }}
+            scrollToSegmentId={scrollToSegmentId}
+            onScrolledToSegment={() => setScrollToSegmentId(null)}
+          />
         ) : (
-          <div style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            textAlign: "center",
-            gap: "16px",
-            color: "var(--color-text-secondary)"
-          }}>
-            <div style={{
-              width: "80px",
-              height: "80px",
-              borderRadius: "24px",
-              backgroundColor: "var(--color-background-surface)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--color-accent)"
-            }}>
-              <CalendarIcon />
+          // Imports are shown here too: the home page has its own "Import
+          // audio" button, so hiding source=import made fresh imports vanish
+          // from the very page that created them (they only appeared under
+          // File Transcription). Both pages list them now.
+          <MeetingsHome
+            meetings={meetings}
+            activeMeetingId={activeMeetingId}
+            liveSeconds={meetingSeconds}
+            upcoming={upcoming}
+            calendarConnected={calendarConnected}
+            recordingBusy={meetingRecording}
+            onNewNote={() => {
+              if (meetingRecording) return;
+              const done = localStorage.getItem("voco-screen-recording-onboarding-done");
+              if (done !== "true") setIsOnboardingOpen(true);
+              else setIsCreatingMeeting(true);
+            }}
+            onImport={handleImportAudio}
+            onSelectMeeting={handleSelectMeeting}
+            onStartUpcoming={(title) => void startMeeting(title)}
+            onSelectSearchResult={(meetingId, segmentId) => {
+              handleSelectMeeting(meetingId);
+              setScrollToSegmentId(segmentId);
+            }}
+          />
+        )}
+
+        {/* New-note title prompt */}
+        {isCreatingMeeting && (
+          <div className="mtg-modal-backdrop" onClick={() => setIsCreatingMeeting(false)}>
+            <div className="mtg-modal" onClick={(e) => e.stopPropagation()}>
+              <VStack gap={4}>
+                <Text className="mtg-serif" style={{ fontSize: "22px", fontWeight: 600, color: "var(--color-text-primary)" }}>
+                  New note
+                </Text>
+                <TextInput
+                  label="Meeting Title"
+                  placeholder="e.g. Project Architecture Sync"
+                  value={newMeetingTitle}
+                  onChange={(val) => setNewMeetingTitle(val)}
+                  style={{ width: "100%" }}
+                />
+                <HStack gap={3} style={{ justifyContent: "flex-end", marginTop: "8px" }}>
+                  <Button variant="secondary" onClick={() => setIsCreatingMeeting(false)} label="Cancel" style={{ cursor: "pointer" }} />
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      const title = newMeetingTitle.trim() || "Meeting Review";
+                      setNewMeetingTitle("");
+                      void startMeeting(title);
+                    }}
+                    label="Start Recording"
+                    style={{ cursor: "pointer", backgroundColor: "var(--color-accent)", color: "#ffffff", border: "none", borderRadius: "999px" }}
+                  />
+                </HStack>
+              </VStack>
             </div>
-            <VStack gap={1}>
-              <Text style={{ fontSize: "18px", fontWeight: "bold", color: "var(--color-text-primary)" }}>
-                Select or Record a Meeting
-              </Text>
-              <Text style={{ fontSize: "13px", color: "var(--color-text-secondary)", maxWidth: "360px" }}>
-                Choose a past meeting from the sidebar to review its transcript and summary, or start a new recording.
-              </Text>
-            </VStack>
           </div>
         )}
-      </div>
 
-      <ScreenRecordingOnboarding
-        isOpen={isOnboardingOpen}
-        onClose={() => setIsOnboardingOpen(false)}
-        onConfirm={() => {
-          setIsOnboardingOpen(false);
-          localStorage.setItem("voco-screen-recording-onboarding-done", "true");
-          setIsCreatingMeeting(true);
-        }}
-      />
-    </HStack>
-  );
+        <ScreenRecordingOnboarding
+          isOpen={isOnboardingOpen}
+          onClose={() => setIsOnboardingOpen(false)}
+          onConfirm={() => {
+            setIsOnboardingOpen(false);
+            localStorage.setItem("voco-screen-recording-onboarding-done", "true");
+            setIsCreatingMeeting(true);
+          }}
+        />
+      </div>
+    );
+  };
 
   const SETTINGS_SECTIONS = [
     { id: "appearance", label: "Appearance" },
@@ -1152,99 +968,5 @@ export default function MainWindow({ activeThemeId, onSelectTheme }: MainWindowP
         }}
       />
     </AppShell>
-  );
-}
-
-// Chrome-style tab button for the meeting review (Transcript | AI Summary).
-function MeetingTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: "10px 18px",
-        border: "none",
-        background: "none",
-        cursor: "pointer",
-        fontSize: 14,
-        fontWeight: 600,
-        color: active ? "var(--color-accent-text, var(--color-accent))" : "var(--color-text-secondary)",
-        borderBottom: active ? "2px solid var(--color-accent)" : "2px solid transparent",
-        marginBottom: "-1px",
-        transition: "color 0.15s ease, border-color 0.15s ease",
-      }}
-    >
-      {label}
-    </button>
-  );
-}
-
-// Small transcript-export dropdown shown for saved meetings.
-function ExportMenu({ onExport }: { onExport: (format: "txt" | "srt" | "vtt" | "json" | "markdown") => void }) {
-  const [open, setOpen] = useState(false);
-  const formats: Array<{ id: "markdown" | "txt" | "srt" | "vtt" | "json"; label: string }> = [
-    { id: "markdown", label: "Markdown (.md)" },
-    { id: "txt", label: "Plain Text (.txt)" },
-    { id: "srt", label: "Subtitles (.srt)" },
-    { id: "vtt", label: "WebVTT (.vtt)" },
-    { id: "json", label: "JSON (.json)" }
-  ];
-  return (
-    <div style={{ position: "relative" }}>
-      <Button
-        variant="secondary"
-        onClick={() => setOpen(!open)}
-        label="Export Transcript"
-        style={{
-          padding: "8px 14px",
-          borderRadius: "8px",
-          border: "1px solid var(--color-border-strong)",
-          backgroundColor: "var(--color-background-surface-hover)",
-          color: "var(--color-text-primary)",
-          cursor: "pointer",
-          fontSize: 13,
-          fontWeight: 600
-        }}
-      />
-      {open && (
-        <>
-          <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 99 }} />
-          <div style={{
-            position: "absolute",
-            right: 0,
-            top: "40px",
-            zIndex: 100,
-            width: "180px",
-            backgroundColor: "var(--color-background-elevated)",
-            border: "1px solid var(--color-border-strong)",
-            borderRadius: "8px",
-            boxShadow: "0 6px 16px rgba(0,0,0,0.3)",
-            padding: "4px",
-            display: "flex",
-            flexDirection: "column"
-          }}>
-            {formats.map((f) => (
-              <button
-                key={f.id}
-                onClick={() => { setOpen(false); onExport(f.id); }}
-                style={{
-                  padding: "8px 12px",
-                  textAlign: "left",
-                  backgroundColor: "transparent",
-                  border: "none",
-                  color: "var(--color-text-primary)",
-                  fontSize: "13px",
-                  cursor: "pointer",
-                  borderRadius: "4px"
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--color-background-surface-hover)")}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
   );
 }

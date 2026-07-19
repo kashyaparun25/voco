@@ -10,14 +10,54 @@ export type SummaryLength = "short" | "medium" | "long";
 export type SummaryStyle = "bullets" | "paragraphs" | "action";
 
 // Meetily-style structured summary templates.
-const SUMMARY_TEMPLATES = [
-  { value: "general", label: "General" },
-  { value: "standup", label: "Standup" },
-  { value: "one_on_one", label: "1:1" },
-  { value: "sales", label: "Sales Call" },
-  { value: "interview", label: "Interview" },
-  { value: "retrospective", label: "Retrospective" },
-  { value: "decision_log", label: "Decision Log" },
+export interface SummaryTemplate {
+  value: string;
+  label: string;
+  emoji: string;
+  /** One-line explanation shown on gallery cards. */
+  description: string;
+}
+
+export const SUMMARY_TEMPLATES: SummaryTemplate[] = [
+  // Core set — always visible in the compact template dropdown.
+  { value: "general", label: "General", emoji: "📋", description: "Balanced meeting notes: overview, key points, decisions and action items" },
+  { value: "standup", label: "Stand-Up", emoji: "🧍", description: "Daily stand-up rundown: progress, plans and blockers per person" },
+  { value: "one_on_one", label: "1 to 1", emoji: "👥", description: "1:1 notes: updates, feedback, growth topics and follow-ups" },
+  { value: "customer_discovery", label: "Customer: Discovery", emoji: "💵", description: "Discovery call notes: problem, current workflow, needs and next steps" },
+  { value: "sales", label: "Sales Call", emoji: "💰", description: "Sales call summary: prospect needs, objections, pricing and next steps" },
+  { value: "interview", label: "Hiring", emoji: "💼", description: "Interview debrief: candidate background, skills, signals and verdict" },
+  { value: "retrospective", label: "Retrospective", emoji: "🔄", description: "Retro summary: what went well, what didn't and improvements to try" },
+  { value: "weekly_team_meeting", label: "Weekly Team Meeting", emoji: "🗓️", description: "Weekly team sync: updates by topic, decisions and owners" },
+  { value: "decision_log", label: "Decision Log", emoji: "⚖️", description: "Decision-focused notes: options considered, rationale and outcomes" },
+  // Extended set — browsable from the template gallery.
+  { value: "all_hands", label: "All Hands", emoji: "📣", description: "Company all-hands recap: announcements, metrics and Q&A highlights" },
+  { value: "board_meeting", label: "Board Meeting", emoji: "🏛️", description: "Structured notes for board meetings: business update, financials, votes" },
+  { value: "brainstorm", label: "Brainstorm", emoji: "💡", description: "Brainstorm capture: ideas grouped by theme, standouts and next steps" },
+  { value: "customer_success", label: "Customer Success", emoji: "🤝", description: "Check-in notes: account health, usage, risks and renewal actions" },
+  { value: "demo", label: "Demo", emoji: "🖥️", description: "Product demo notes: features shown, reactions, questions and follow-ups" },
+  { value: "design_review", label: "Design Review", emoji: "🎨", description: "Design critique notes: feedback by screen, decisions and revisions" },
+  { value: "investor_update", label: "Investor Update", emoji: "📈", description: "Investor meeting recap: traction, metrics, asks and commitments" },
+  { value: "kickoff", label: "Project Kickoff", emoji: "🚀", description: "Project kickoff summary: goals, scope, roles, timeline and risks" },
+  { value: "okr_planning", label: "OKR Planning", emoji: "🎯", description: "OKR planning notes: objectives, key results, owners and confidence" },
+  { value: "performance_review", label: "Performance Review", emoji: "🧭", description: "Review conversation: achievements, feedback, goals and development" },
+  { value: "user_research", label: "User Research", emoji: "🔍", description: "Research session notes: participant context, observations and insights" },
+  { value: "support_call", label: "Support Call", emoji: "🎧", description: "Support call log: issue, troubleshooting steps, resolution and follow-up" },
+  { value: "training_session", label: "Training Session", emoji: "🧑‍🏫", description: "Training recap: topics covered, exercises, questions and resources" },
+  { value: "lecture", label: "Lecture / Class", emoji: "🎓", description: "Lecture notes: key concepts, examples, definitions and takeaways" },
+];
+
+/** The original core templates — the compact dropdown only lists these
+ *  (plus favorites and the current selection); the rest live in the gallery. */
+export const CORE_TEMPLATE_VALUES: string[] = [
+  "general",
+  "standup",
+  "one_on_one",
+  "customer_discovery",
+  "sales",
+  "interview",
+  "retrospective",
+  "weekly_team_meeting",
+  "decision_log",
 ];
 
 interface SummaryViewProps {
@@ -127,7 +167,8 @@ function renderTable(header: string[], rows: string[][], key: React.Key): React.
 
 // Render a useful subset of Markdown: headings, bullets, numbered lists, **bold**,
 // and GitHub-flavored pipe tables (for action items / structured rows).
-function parseMarkdown(text: string): React.ReactNode[] {
+// Exported so the Granola-style meeting note page can reuse the same renderer.
+export function parseMarkdown(text: string): React.ReactNode[] {
   if (!text) return [];
   const lines = text.split("\n");
   const out: React.ReactNode[] = [];
