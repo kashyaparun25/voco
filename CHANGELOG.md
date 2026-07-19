@@ -2,6 +2,31 @@
 
 All notable changes to Voco. Dates are the day work landed.
 
+## [0.4.1] — 2026-07-19
+
+A dictation accuracy and latency patch, validated side-by-side against
+FluidVoice on the same recordings.
+
+### Dictation
+- **Rolling commits** — long dictations are transcribed in ~30 s chunks *while
+  you speak*; stop→paste now takes about a second instead of paying the whole
+  transcription at the end (measured 8 s on a 67 s dictation before).
+- **30 s windows everywhere** — the final pass uses the same window size as the
+  live preview; single passes far beyond Parakeet's training window measurably
+  degraded accuracy (the pill was right, the paste was wrong).
+- **Full-precision Parakeet** — new optional `parakeet-tdt-v3-fp32` model
+  (~2.3 GB): the int8 quantization caused single-phoneme misses
+  ("correct" → "connect"), especially on accented speech. Runs on the CPU
+  provider (ONNX Runtime's CoreML backend can't load external weight files);
+  the int8 bundle remains the memory-light default.
+- Identical audio preprocessing for preview, rolling commits, and the final
+  tail, so the paste matches the pill. Filler removal ("um", "uh") is now on
+  by default.
+
+### Settings
+- **Logs viewer** — Settings → Logs shows the app log with filtering,
+  auto-refresh, copy-all, reveal-in-Finder, and clear.
+
 ## [0.4.0] — 2026-07-19
 
 A meetings release: one local model that transcribes and diarizes together, a
